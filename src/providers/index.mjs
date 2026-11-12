@@ -26,8 +26,15 @@
 //                 Concurrent callers share a check() that is still running. The login status itself is
 //                 read on every inspect, so a discussion always sees the current login method.
 //   invoke(ctx)   answers one prompt. ctx: { bin, run, workDir, signal, prompt, instructions, model,
-//                 reasoning, webSearch, timeout }. Resolves to { text, model }; the caller trims the text
-//                 and rejects empty or overlong answers.
+//                 reasoning, webSearch, timeout, onText, onActivity }. Resolves to { text, model, usage? };
+//                 the caller trims the text and rejects empty or overlong answers. usage is { inputTokens,
+//                 outputTokens, cachedInputTokens }, the counts the CLI reported (see stream.mjs). While
+//                 the CLI answers, onText(chunk) may receive the text it streams and onActivity(kind) what
+//                 the model does ('thinking', 'searching', 'writing'); both only feed live previews, never
+//                 the answer. An adapter streams only when its CLI's help, as inspect last read it, lists
+//                 the flags it needs, and otherwise asks for its one-shot output.
+//   contract      what the adapter expects of its CLI: version and help commands and the flags they must
+//                 list (see common.mjs).
 // `run` is runProcess bound to the server's runtime folder and scrubbed environment (see process.mjs).
 import codex from './codex.mjs';
 import claude from './claude.mjs';

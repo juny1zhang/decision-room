@@ -1,7 +1,16 @@
-// Claude Code adapter: claude.ai login and model checks, and one tool-restricted `claude -p` turn per answer.
+// Claude Code adapter: claude.ai login and model checks, and one tool-restricted `claude -p` turn per answer,
+// streamed when the CLI's help offers partial messages.
 import { CATALOG_TIMEOUT } from '../config.mjs';
 import { classifyFailure, failureError } from '../diagnostics.mjs';
-import { checkCli, effortLevels, isModelId, listsFlag } from './common.mjs';
+import { checkCli, effortLevels, isModelId, listsFlag, missingFlags } from './common.mjs';
+import {
+  isObject,
+  parseEvent,
+  progressReporter,
+  readUsage,
+  STREAM_OUTPUT_LIMIT,
+  sumUsage
+} from './stream.mjs';
 
 // Every call ignores user, project and local settings and hooks, and requires a claude.ai login.
 const COMMON_ARGS = [
@@ -40,7 +49,9 @@ export const contract = {
         '--allowedTools',
         // The model catalogue only, which is asked when the help lists --input-format
         '--input-format',
-        '--verbose'
+        // The model catalogue, and answers streamed when the help lists both (STREAM_FLAGS)
+        '--verbose',
+        '--include-partial-messages'
       ],
       // Every answer relies on these.
       required: ['--safe-mode', '--tools', '--output-format']
@@ -49,6 +60,11 @@ export const contract = {
   // Accepted, but left out of --help (checked in the Claude Code 2.1.322 binary).
   hiddenFlags: ['--max-turns']
 };
+
+/** Flags of a streamed answer (--output-format stream-json); a CLI whose help lacks one answers in json. */
+const STREAM_FLAGS = ['--verbose', '--include-partial-messages'];
+/** Executable path → whether its help, as the last health check read it, lists STREAM_FLAGS. */
+const streaming = new Map();
 
 /**
  * The levels `claude --help` lists for --effort, lowest first, such as ["low", "medium", "high"] from
@@ -137,9 +153,11 @@ async function inspect(ctx) {
   ]);
   info.version = cli.version;
   if (!cli.ok) {
+    streaming.delete(bin);
     info.message = cli.message;
     return info;
   }
+  streaming.set(bin, missingFlags(cli.help, STREAM_FLAGS).length === 0);
   let result;
   try {
     result = JSON.parse(auth.stdout);
@@ -161,12 +179,16 @@ async function inspect(ctx) {
 
 /**
  * Arguments for one non-interactive turn that reads its prompt from stdin: no session file, MCP servers,
- * slash commands or browser, and no tools except web search and fetch when `webSearch` is on.
+ * slash commands or browser, and no tools except web search and fetch when `webSearch` is on. With
+ * `stream`, the CLI prints its events as they happen (stream-json), partial messages included; otherwise
+ * one json result.
  */
-export function printArgs({ instructions, model, reasoning, webSearch }) {
+export function printArgs({ instructions, model, reasoning, webSearch, stream = false }) {
   const tools = webSearch ? 'WebSearch,WebFetch' : '';
-  const args = [...COMMON_ARGS, '-p', '--output-format', 'json', '--no-session-persistence'];
-  args.push('--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}');
+  const args = [...COMMON_ARGS, '-p'];
+  if (stream) args.push('--output-format', 'stream-json', ...STREAM_FLAGS);
+  else args.push('--output-format', 'json');
+  args.push('--no-session-persistence', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}');
   args.push('--disable-slash-commands', '--no-chrome', '--permission-mode', 'dontAsk');
   args.push('--tools', tools, '--disallowedTools', 'mcp__*', '--max-turns', '8');
   args.push('--append-system-prompt', instructions);
@@ -174,6 +196,68 @@ export function printArgs({ instructions, model, reasoning, webSearch }) {
   if (reasoning) args.push('--effort', reasoning);
   if (webSearch) args.push('--allowedTools', 'WebSearch,WebFetch');
   return args;
+}
+
+/**
+ * Reads `claude -p --output-format stream-json --verbose --include-partial-messages` line by line (pass
+ * line() as onLine). Text deltas ({"type":"stream_event","event":{"type":"content_block_delta","delta":
+ * {"type":"text_delta","text":…}}}) go to callbacks.onText; thinking blocks and web tools are reported as
+ * activities (see progressReporter). Should the CLI send no text delta, the text of each complete
+ * assistant message is the preview. `result` is the last {"type":"result"} event, which has the fields of
+ * --output-format json, or null.
+ */
+export function readClaudeStream(callbacks) {
+  const progress = progressReporter(callbacks);
+  let result = null;
+  let deltas = false;
+  const contentBlock = (block) => {
+    if (block.type === 'thinking' || block.type === 'redacted_thinking') progress.activity('thinking');
+    else if (block.type === 'tool_use' || block.type === 'server_tool_use') {
+      // Web search and fetch are the only tools an answer may use.
+      if (/web/i.test(String(block.name))) progress.activity('searching');
+    } else if (block.type === 'text') progress.separate();
+  };
+  return {
+    get result() {
+      return result;
+    },
+    line(raw) {
+      const event = parseEvent(raw);
+      if (!event) return;
+      if (event.type === 'result') {
+        result = event;
+        return;
+      }
+      // Events of a subagent, which the answer's tools do not allow anyway.
+      if (event.parent_tool_use_id != null) return;
+      if (event.type === 'stream_event' && isObject(event.event)) {
+        const { type, content_block: block, delta } = event.event;
+        if (type === 'message_start') progress.separate();
+        else if (type === 'content_block_start' && isObject(block)) contentBlock(block);
+        else if (type === 'content_block_delta' && isObject(delta)) {
+          if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+            deltas = true;
+            progress.text(delta.text);
+          } else if (delta.type === 'thinking_delta') progress.activity('thinking');
+        }
+      } else if (event.type === 'assistant' && !deltas && Array.isArray(event.message?.content)) {
+        for (const block of event.message.content) {
+          if (!isObject(block)) continue;
+          contentBlock(block);
+          if (block.type === 'text') progress.text(block.text);
+        }
+      }
+    }
+  };
+}
+
+/**
+ * The tokens a result reports: the sum over the models in modelUsage (an answer may use more than one),
+ * else its usage field; null when neither has a count.
+ */
+function resultUsage(result) {
+  const models = isObject(result.modelUsage) ? Object.values(result.modelUsage) : [];
+  return sumUsage(models.map((usage) => readUsage(usage))) ?? readUsage(result.usage);
 }
 
 async function invoke({
@@ -186,15 +270,27 @@ async function invoke({
   model,
   reasoning,
   webSearch,
-  timeout
+  timeout,
+  onText,
+  onActivity
 }) {
-  const args = printArgs({ instructions, model, reasoning, webSearch });
-  const result = await run(bin, args, { input: prompt, cwd: workDir, timeout, signal });
+  const stream = streaming.get(bin) === true;
+  const args = printArgs({ instructions, model, reasoning, webSearch, stream });
+  const options = { input: prompt, cwd: workDir, timeout, signal };
+  let result;
   let parsed = null;
-  try {
-    parsed = JSON.parse(result.stdout);
-  } catch {}
-  if (!parsed || typeof parsed !== 'object') parsed = null;
+  if (stream) {
+    const reader = readClaudeStream({ onText, onActivity });
+    const streamed = { onLine: reader.line, keepStdout: false, outputLimit: STREAM_OUTPUT_LIMIT };
+    result = await run(bin, args, { ...options, ...streamed });
+    parsed = reader.result;
+  } else {
+    result = await run(bin, args, options);
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {}
+    if (!isObject(parsed)) parsed = null;
+  }
   // The result is the model's answer unless the CLI marked it as an error; only then may it explain a failure.
   const subtype = typeof parsed?.subtype === 'string' ? parsed.subtype : '';
   const failed = parsed !== null && (parsed.is_error === true || (subtype !== '' && subtype !== 'success'));
@@ -209,9 +305,11 @@ async function invoke({
   }
   if (!parsed)
     throw failureError({ category: 'cli', message: '无法解析 Claude 返回结果。请更新 Claude Code 后重试。' });
+  const usage = resultUsage(parsed);
   return {
     text: typeof parsed.result === 'string' ? parsed.result : '',
-    model: Object.keys(parsed.modelUsage || {}).join(', ') || model || 'Claude 默认模型'
+    model: Object.keys(parsed.modelUsage || {}).join(', ') || model || 'Claude 默认模型',
+    ...(usage && { usage })
   };
 }
 

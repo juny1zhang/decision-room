@@ -2,7 +2,38 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const writeEvent = (event) => process.stdout.write(JSON.stringify(event) + '\n');
+
+/** `text` cut into `count` pieces of about the same length, which join to it again. */
+function pieces(text, count = 3) {
+  const size = Math.ceil(text.length / count);
+  const parts = [];
+  for (let start = 0; start < text.length; start += size) parts.push(text.slice(start, start + size));
+  return parts;
+}
+
+// Token counts the mock CLIs report, as each CLI names them.
+export const MOCK_USAGE = {
+  // Codex counts cached tokens as input: 12,345 in all, 2,048 of them cached.
+  codex: { input_tokens: 12345, cached_input_tokens: 2048, output_tokens: 1234 },
+  // Claude lists cache reads and writes beside the input: 20 + 300 + 4,000 = 4,320 in all.
+  claude: {
+    input_tokens: 20,
+    cache_creation_input_tokens: 300,
+    cache_read_input_tokens: 4000,
+    output_tokens: 456
+  }
+};
+
 // Local process fixtures. These never contact a model or inspect real credentials.
+//
+// control.json steers them, per provider: auth ('api', 'oauth', 'third_party', 'none'), fail, failure
+// ({ answer, stderr, code }), hang, empty, delayMs (before answering), expiredCatalog (Cursor), and for
+// streaming: noStreamFlags (help without the streaming flags, as an older CLI) and streamDelayMs (the pause
+// before each streamed piece, 20 ms by default). With the flags in its help the app asks Claude and Cursor
+// for stream-json output; Codex always streams its --json events, with item.updated previews unless
+// noStreamFlags is set.
 export async function runMock(provider, wrapperUrl) {
   const dir = path.dirname(fileURLToPath(wrapperUrl));
   const controlPath = path.join(dir, 'control.json');
@@ -24,13 +55,21 @@ export async function runMock(provider, wrapperUrl) {
     return;
   }
   if (args.includes('--help') || args.includes('-h')) {
+    const streamFlags = settings.noStreamFlags
+      ? ''
+      : { codex: '', claude: ' --verbose --include-partial-messages', cursor: ' --stream-partial-output' }[
+          provider
+        ];
     const help = {
       codex:
         '--ignore-user-config --model --json --output-last-message -o --sandbox --skip-git-repo-check --ephemeral --search --config --ask-for-approval',
       claude:
-        '--safe-mode --model <model> --no-session-persistence --setting-sources --mcp-config --strict-mcp-config --disable-slash-commands --tools --allowedTools --permission-mode --max-turns --input-format --output-format\n  --effort <level>  Effort level for the current session\n                    (low, medium, high, xhigh, max)\n',
+        '--safe-mode --model <model> --no-session-persistence --setting-sources --mcp-config --strict-mcp-config --disable-slash-commands --tools --allowedTools --permission-mode --max-turns --input-format --output-format' +
+        streamFlags +
+        '\n  --effort <level>  Effort level for the current session\n                    (low, medium, high, xhigh, max)\n',
       cursor:
-        '--mode <mode> (choices: "plan", "ask") --workspace --trust --model --sandbox --list-models --print --output-format --format'
+        '--mode <mode> (choices: "plan", "ask") --workspace --trust --model --sandbox --list-models --print --output-format --format' +
+        streamFlags
     };
     process.stdout.write(help[provider] + '\n');
     return;
@@ -202,45 +241,89 @@ export async function runMock(provider, wrapperUrl) {
     return;
   }
   if (settings.empty) return;
-  if (settings.delayMs) await new Promise((resolve) => setTimeout(resolve, settings.delayMs));
+  if (settings.delayMs) await sleep(settings.delayMs);
+  const streamDelay = settings.streamDelayMs ?? 20;
+  const stream = args[args.indexOf('--output-format') + 1] === 'stream-json';
   if (provider === 'codex') {
     const outputIndex = args.findIndex((x) => x === '-o' || x === '--output-last-message');
     if (outputIndex !== -1 && args[outputIndex + 1]) fs.writeFileSync(args[outputIndex + 1], result);
-    process.stdout.write(
-      JSON.stringify({ type: 'thread.started', thread_id: 'fake-codex-thread', model: 'mock-codex-actual' }) +
-        '\n'
-    );
-    process.stdout.write(JSON.stringify({ type: 'turn.started' }) + '\n');
-    process.stdout.write(
-      JSON.stringify({
-        type: 'item.completed',
-        item: { id: 'agent-1', type: 'agent_message', text: result }
-      }) + '\n'
-    );
-    process.stdout.write(
-      JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 10 } }) + '\n'
-    );
-  } else if (provider === 'claude') {
-    process.stdout.write(
-      JSON.stringify({
-        type: 'result',
-        subtype: 'success',
-        is_error: false,
-        result,
-        session_id: 'fake-claude-session',
-        modelUsage: { 'mock-claude': { inputTokens: 10, outputTokens: 10 } },
-        total_cost_usd: 0
-      }) + '\n'
-    );
-  } else {
-    process.stdout.write(
-      JSON.stringify({
-        type: 'result',
-        subtype: 'success',
-        is_error: false,
-        result,
-        session_id: 'fake-cursor-session'
-      }) + '\n'
-    );
+    writeEvent({ type: 'thread.started', thread_id: 'fake-codex-thread', model: 'mock-codex-actual' });
+    writeEvent({ type: 'turn.started' });
+    if (!settings.noStreamFlags) {
+      const reasoning = { id: 'reasoning-1', type: 'reasoning', text: '' };
+      writeEvent({ type: 'item.started', item: reasoning });
+      writeEvent({ type: 'item.completed', item: { ...reasoning, text: '**Weighing the options**' } });
+      let text = '';
+      for (const piece of pieces(result)) {
+        await sleep(streamDelay);
+        text += piece;
+        writeEvent({ type: 'item.updated', item: { id: 'agent-1', type: 'agent_message', text } });
+      }
+    }
+    writeEvent({ type: 'item.completed', item: { id: 'agent-1', type: 'agent_message', text: result } });
+    writeEvent({ type: 'turn.completed', usage: MOCK_USAGE.codex });
+    return;
   }
+  const modelUsage = {
+    'mock-claude': {
+      inputTokens: MOCK_USAGE.claude.input_tokens,
+      outputTokens: MOCK_USAGE.claude.output_tokens,
+      cacheReadInputTokens: MOCK_USAGE.claude.cache_read_input_tokens,
+      cacheCreationInputTokens: MOCK_USAGE.claude.cache_creation_input_tokens
+    }
+  };
+  const final =
+    provider === 'claude'
+      ? {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result,
+          duration_ms: 1234,
+          session_id: 'fake-claude-session',
+          usage: MOCK_USAGE.claude,
+          modelUsage,
+          total_cost_usd: 0
+        }
+      : {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result,
+          duration_ms: 1234,
+          session_id: 'fake-cursor-session'
+        };
+  if (stream && provider === 'claude') {
+    // Claude Code's stream-json with --include-partial-messages; an unknown event and a noisy line too.
+    writeEvent({ type: 'system', subtype: 'init', model: 'mock-claude', session_id: 'fake-claude-session' });
+    writeEvent({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } });
+    process.stdout.write('not json at all\n');
+    const partial = (event) => writeEvent({ type: 'stream_event', event, parent_tool_use_id: null });
+    partial({ type: 'message_start', message: { model: 'mock-claude', content: [] } });
+    partial({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } });
+    partial({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '…' } });
+    partial({ type: 'content_block_stop', index: 0 });
+    partial({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } });
+    for (const piece of pieces(result)) {
+      await sleep(streamDelay);
+      partial({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: piece } });
+    }
+    partial({ type: 'content_block_stop', index: 1 });
+    writeEvent({ type: 'assistant', message: { content: [{ type: 'text', text: result }] } });
+    partial({ type: 'message_stop' });
+  } else if (stream) {
+    // Cursor Agent's stream-json with --stream-partial-output, which repeats the whole message at the end.
+    writeEvent({ type: 'system', subtype: 'init', session_id: 'fake-cursor-session' });
+    writeEvent({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } });
+    writeEvent({ type: 'thinking', subtype: 'delta', text: '…' });
+    writeEvent({ type: 'thinking', subtype: 'completed' });
+    const assistant = (text) =>
+      writeEvent({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+    for (const piece of pieces(result)) {
+      await sleep(streamDelay);
+      assistant(piece);
+    }
+    assistant(result);
+  }
+  writeEvent(final);
 }

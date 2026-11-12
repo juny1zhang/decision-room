@@ -1,7 +1,14 @@
 // One discussion round: checks, independent analyses, cross-reviews and the moderator's summary, streamed
 // to the browser as NDJSON events and saved to the room after every message.
+//
+// Events: { type: 'room', roomId, title } first; { type: 'message', message } for every saved message;
+// { type: 'status', agent, stage, text } as a participant starts, thinks, searches the web, finishes or
+// fails (stage 'error'); { type: 'delta', agent, stage, append, reset? } with the text a participant's CLI
+// streams before its answer is final (see livePreview); { type: 'heartbeat' } while nothing else happens;
+// { type: 'done', roomId } last. Answer messages also store durationMs and, when the CLI reports it,
+// usage { inputTokens, outputTokens, cachedInputTokens }.
 import { randomUUID } from 'node:crypto';
-import { HEARTBEAT_INTERVAL, MAX_CONTEXT, MAX_MESSAGES, MAX_PROMPT } from './config.mjs';
+import { HEARTBEAT_INTERVAL, MAX_CONTEXT, MAX_MESSAGES, MAX_PROMPT, MAX_REPLY } from './config.mjs';
 import { AppError } from './errors.mjs';
 import { contextInEffect, hasContextSnapshot, roomMessages } from './messages.mjs';
 import {
@@ -20,6 +27,61 @@ import { readConfiguration } from './validation.mjs';
 
 const STAGE_STATUS = { analysis: '正在独立分析', review: '正在交叉审查', summary: '正在整理决策结论' };
 const STAGE_TASK = { analysis: '分析', review: '审查', summary: '整理' };
+/** Status of what a model does while it answers (see invoke.mjs); 'writing' shows the stage's status. */
+const ACTIVITY_STATUS = { thinking: '正在思考', searching: '正在检索网页' };
+/** Least time between two preview events of one call. */
+const DELTA_INTERVAL = 120;
+
+/**
+ * The live preview of one call by `agent` for `stage`. text(chunk) collects the answer text the CLI
+ * streams and emits it as { type: 'delta', agent, stage, append } at most once per DELTA_INTERVAL; the
+ * first event of the call also carries reset: true, so the page starts this preview over (should an
+ * earlier call for the same agent and stage have left one). Up to MAX_REPLY characters are previewed.
+ * close() stops it; close({ flush: true }) first emits the text still waiting, so that the deltas add up
+ * to all the streamed text before the final message arrives.
+ */
+function livePreview(emit, agent, stage) {
+  let pending = '';
+  let size = 0;
+  let sentAt = -Infinity;
+  let timer = null;
+  let started = false;
+  let closed = false;
+  const send = () => {
+    clearTimeout(timer);
+    timer = null;
+    if (closed || !pending) return;
+    emit({ type: 'delta', agent, stage, append: pending, ...(!started && { reset: true }) });
+    started = true;
+    pending = '';
+    sentAt = Date.now();
+  };
+  return {
+    text(chunk) {
+      if (closed || typeof chunk !== 'string' || !chunk || size >= MAX_REPLY) return;
+      const part = chunk.slice(0, MAX_REPLY - size);
+      size += part.length;
+      pending += part;
+      if (timer) return;
+      const wait = sentAt + DELTA_INTERVAL - Date.now();
+      if (wait > 0) timer = setTimeout(send, wait);
+      else send();
+    },
+    close({ flush = false } = {}) {
+      if (flush) send();
+      clearTimeout(timer);
+      closed = true;
+    }
+  };
+}
+
+/** The wall-clock time and token usage of an answer, as stored with its message, when known. */
+function answerMeasures({ durationMs, usage }) {
+  return {
+    ...(Number.isFinite(durationMs) && { durationMs }),
+    ...(usage && { usage })
+  };
+}
 
 /**
  * The single discussion that may run at a time, so it can be refused, cancelled and reported as busy, and the
@@ -151,14 +213,27 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
     const base = roundPrompt({ context, history: previous.text, prompt });
     const status = (agent, stage, text) => emit({ type: 'status', agent, stage, text });
     // Resolves to the answer, or to null when the call failed (recorded as an error message) or was stopped.
+    // While the call runs, its streamed text goes out as delta events and what the model does as statuses.
     const perform = async (agent, task, stage, role = agent) => {
       if (signal.aborted) return null;
-      status(agent, stage, STAGE_STATUS[stage]);
+      let shown = STAGE_STATUS[stage];
+      status(agent, stage, shown);
+      const preview = livePreview(emit, agent, stage);
+      const onActivity = (kind) => {
+        const text = kind === 'writing' ? STAGE_STATUS[stage] : ACTIVITY_STATUS[kind];
+        if (!text || text === shown || signal.aborted) return;
+        shown = text;
+        status(agent, stage, text);
+      };
       let answer;
       try {
         const focused = stage === 'summary' ? task : withCapability(settings[agent].capability, task);
-        answer = await invoke(agent, focused, webSearch, signal, settings[agent]);
+        answer = await invoke(agent, focused, webSearch, signal, settings[agent], {
+          onText: preview.text,
+          onActivity
+        });
       } catch (e) {
+        preview.close();
         if (signal.aborted) return null;
         await add(
           'system',
@@ -168,8 +243,13 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
         status(agent, 'error', '本轮未完成');
         return null;
       }
+      preview.close({ flush: !signal.aborted });
       if (signal.aborted) return null;
-      await add(role, answer.text, stage, { provider: agent, model: answer.model });
+      await add(role, answer.text, stage, {
+        provider: agent,
+        model: answer.model,
+        ...answerMeasures(answer)
+      });
       status(agent, stage, '已完成');
       return answer;
     };

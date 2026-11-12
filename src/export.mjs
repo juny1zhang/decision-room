@@ -28,6 +28,41 @@ export function localDateTime(value) {
   return `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}（${zone}）`;
 }
 
+/** "用时 42 秒", "用时 3 分 12 秒": how long an answer took, or '' when unknown. */
+export function durationText(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 1) return '用时不到 1 秒';
+  if (seconds < 60) return `用时 ${seconds} 秒`;
+  const rest = seconds % 60;
+  return `用时 ${Math.floor(seconds / 60)} 分${rest ? ` ${rest} 秒` : '钟'}`;
+}
+
+const tokenCount = (value) =>
+  Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString('en-US') : '';
+
+/**
+ * "输入 12,345（缓存 8,000）/ 输出 1,234 tokens": the tokens an answer used, with only the counts its CLI
+ * reported (the cached ones only when there are some), or '' when it reported none.
+ */
+export function usageText(usage) {
+  if (!usage || typeof usage !== 'object') return '';
+  const input = tokenCount(usage.inputTokens);
+  const output = tokenCount(usage.outputTokens);
+  const cached = input && usage.cachedInputTokens > 0 ? tokenCount(usage.cachedInputTokens) : '';
+  const parts = [input && `输入 ${input}${cached && `（缓存 ${cached}）`}`, output && `输出 ${output}`];
+  // A full-width parenthesis brings its own space.
+  const text = parts.filter(Boolean).join(cached ? '/ ' : ' / ');
+  return text && `${text} tokens`;
+}
+
+/** The note under an answer: its model, time and tokens, the known ones, joined by " · ". */
+export function answerNote(message) {
+  return [resultModel(message), durationText(message.durationMs), usageText(message.usage)]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 function configurationMarkdown(saved) {
   const configuration = savedConfiguration(saved);
   if (!configuration) return '';
@@ -46,7 +81,8 @@ function configurationMarkdown(saved) {
 
 /**
  * The whole room as Markdown: title, the shared context of its first question, then every message with its
- * stage, time, settings and model. A question that changed the shared context is followed by the new one.
+ * stage, time, settings, and model, time taken and tokens. A question that changed the shared context is
+ * followed by the new one.
  */
 export function exportRoom(room) {
   const created = localDateTime(room.createdAt);
@@ -61,8 +97,8 @@ export function exportRoom(room) {
     out += `## ${heading.filter(Boolean).join(' · ')}\n\n`;
     const settings = configurationMarkdown(message.configuration);
     if (settings) out += settings + '\n\n';
-    const model = resultModel(message);
-    if (model) out += `模型 · ${model}\n\n`;
+    const note = answerNote(message);
+    if (note) out += `${resultModel(message) ? '模型 · ' : ''}${note}\n\n`;
     out += `${messageText(message)}\n\n`;
     if (!contexts.has(message)) continue;
     const context = contexts.get(message);

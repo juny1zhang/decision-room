@@ -94,15 +94,29 @@ function shorten(argument) {
  * Runs a CLI without a shell, writes `input` to its stdin and collects its output.
  *
  * Resolves with { code, stdout, stderr } once the process exits. Rejects with an AppError when it cannot
- * start, `signal` aborts, `timeout` passes or it prints more than OUTPUT_LIMIT bytes; the whole process
- * group is then terminated. `onLine` receives each stdout line as it arrives. `env` entries are added to
- * the environment produced by childEnv(denylist). With `debug`, one line per process reports `label`, the
+ * start, `signal` aborts, `timeout` passes or it prints more than `outputLimit` bytes (stdout and stderr
+ * together, OUTPUT_LIMIT by default); the whole process group is then terminated. `onLine` receives each
+ * stdout line as it arrives; with `keepStdout: false` the lines are only passed to it and the result's
+ * stdout is '', for a CLI that streams more than is worth keeping. `env` entries are added to the
+ * environment produced by childEnv(denylist). With `debug`, one line per process reports `label`, the
  * executable, arguments, folder, exit code, duration and redacted stderr; never stdin or stdout.
  */
 export function runProcess(
   executable,
   args,
-  { input = '', cwd, timeout = CHECK_TIMEOUT, signal, onLine, env, denylist = [], debug, label } = {}
+  {
+    input = '',
+    cwd,
+    timeout = CHECK_TIMEOUT,
+    signal,
+    onLine,
+    keepStdout = true,
+    outputLimit = OUTPUT_LIMIT,
+    env,
+    denylist = [],
+    debug,
+    label
+  } = {}
 ) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new AppError('讨论已停止。'));
@@ -176,11 +190,11 @@ export function runProcess(
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
       total += Buffer.byteLength(chunk);
-      if (total > OUTPUT_LIMIT) {
+      if (total > outputLimit) {
         stop(new AppError('工具返回内容过多，已停止本轮。请缩小问题范围。'));
         return;
       }
-      stdout += chunk;
+      if (keepStdout || !onLine) stdout += chunk;
       if (onLine) {
         pending += chunk;
         let end;
@@ -195,7 +209,7 @@ export function runProcess(
     });
     child.stderr.on('data', (chunk) => {
       total += Buffer.byteLength(chunk);
-      if (total > OUTPUT_LIMIT) stop(new AppError('工具返回内容过多，已停止本轮。'));
+      if (total > outputLimit) stop(new AppError('工具返回内容过多，已停止本轮。'));
       if (stderr.length < STDERR_LIMIT) stderr += chunk;
     });
     child.on('error', (e) => finish(new AppError(`无法启动工具：${safeDetail(e.message)}`)));

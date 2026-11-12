@@ -6,7 +6,8 @@ import path from 'node:path';
 import { classifyFailure, errorText, failureError } from '../diagnostics.mjs';
 import { systemCaEnv } from '../process.mjs';
 import { stripAnsi } from '../redact.mjs';
-import { checkCli } from './common.mjs';
+import { checkCli, listsFlag } from './common.mjs';
+import { isObject, parseEvent, progressReporter, readUsage, STREAM_OUTPUT_LIMIT } from './stream.mjs';
 
 const credentialStores = new Map();
 const authenticationError =
@@ -34,12 +35,17 @@ const ANSWER_FLAGS = [
 export const contract = {
   versionArgs: ['--version'],
   helpChecks: [
-    { args: ['--help'], flags: ANSWER_FLAGS, required: ANSWER_FLAGS },
+    // An answer streams (--output-format stream-json) when the help also lists STREAM_FLAG.
+    { args: ['--help'], flags: [...ANSWER_FLAGS, '--stream-partial-output'], required: ANSWER_FLAGS },
     { args: ['status', '--help'], flags: ['--format'] }
   ],
   hiddenFlags: []
 };
 const OUTDATED = '当前 Cursor Agent CLI 缺少只读模式或所需参数。请更新后重试。';
+/** The flag that makes stream-json output carry text deltas; a CLI whose help lacks it answers in json. */
+const STREAM_FLAG = '--stream-partial-output';
+/** Executable path → whether its help, as the last health check read it, lists STREAM_FLAG. */
+const streaming = new Map();
 
 function credentialFile(env, home) {
   if (process.platform === 'darwin') return path.join(home, '.cursor', 'auth.json');
@@ -185,9 +191,11 @@ async function inspect(ctx) {
       ]);
       info.version = cli.version;
       if (!cli.ok) {
+        streaming.delete(bin);
         info.message = cli.message;
         return info;
       }
+      streaming.set(bin, listsFlag(cli.help, STREAM_FLAG));
       const statusKey = `${store || ''}\n${status.result.code}\n${status.result.stdout}`;
       const login = await ctx.remote(statusKey, async () => {
         let validated = await validateLogin(bin, run, options, status.loggedIn);
@@ -248,22 +256,107 @@ export function classifyCursorFailure({ code, stderr = '', errors = [] }) {
   };
 }
 
+/** Characters of a streamed message before a piece that starts with all of it counts as a repeat. */
+const REPEAT_MIN = 16;
+
+/** The text of a stream-json message: its text parts, joined. */
+const messageText = (message) =>
+  Array.isArray(message?.content)
+    ? message.content
+        .filter((part) => isObject(part) && part.type === 'text' && typeof part.text === 'string')
+        .map((part) => part.text)
+        .join('')
+    : '';
+
+/**
+ * Reads `agent --print --output-format stream-json --stream-partial-output` line by line (pass line() as
+ * onLine). Each {"type":"assistant","message":{"content":[{"type":"text","text":…}]}} event carries the next
+ * piece of text, which goes to callbacks.onText. Once the message so far has REPEAT_MIN characters, a piece
+ * that starts with all of it adds only what is new: a CLI may send the complete message after its pieces.
+ * Thinking events and web tool calls are reported as activities (see progressReporter); text after a tool
+ * call starts a new paragraph. `result` is the last {"type":"result"} event, or null; `model` is the model
+ * the {"type":"system"} event names, or ''.
+ */
+export function readCursorStream(callbacks) {
+  const progress = progressReporter(callbacks);
+  let result = null;
+  let model = '';
+  let message = ''; // the text since the last tool call
+  return {
+    get result() {
+      return result;
+    },
+    get model() {
+      return model;
+    },
+    line(raw) {
+      const event = parseEvent(raw);
+      if (!event) return;
+      if (event.type === 'result') result = event;
+      else if (event.type === 'system' && typeof event.model === 'string') model = event.model;
+      else if (event.type === 'thinking') progress.activity('thinking');
+      else if (event.type === 'tool_call') {
+        // Only the call's kind (the key of its tool_call object) is read, never its arguments.
+        if (event.subtype === 'started' && isObject(event.tool_call)) {
+          if (Object.keys(event.tool_call).some((kind) => /web/i.test(kind))) progress.activity('searching');
+        }
+        message = '';
+        progress.separate();
+      } else if (event.type === 'assistant') {
+        const text = messageText(event.message);
+        if (message.length >= REPEAT_MIN && text.startsWith(message)) {
+          progress.text(text.slice(message.length));
+          message = text;
+        } else {
+          progress.text(text);
+          message += text;
+        }
+      }
+    }
+  };
+}
+
 // Cursor has no separate system prompt: the instructions precede the question on stdin. Reasoning effort
 // is part of a Cursor model ID, so ctx.reasoning is not used.
-async function invoke({ bin, run, workDir, signal, prompt, instructions, model, webSearch, timeout }) {
+async function invoke({
+  bin,
+  run,
+  workDir,
+  signal,
+  prompt,
+  instructions,
+  model,
+  webSearch,
+  timeout,
+  onText,
+  onActivity
+}) {
   return withCursorWorkspace(workDir, webSearch, async ({ cwd, env }) => {
     const store = credentialStores.get(bin);
     if (store) env.AGENT_CLI_CREDENTIAL_STORE = store;
+    const stream = streaming.get(bin) === true;
     // Only this empty, app-owned workspace receives trust. Tool permissions remain scoped.
     const args = ['--print', '--trust', '--mode', 'ask', '--sandbox', 'enabled', '--workspace', cwd];
-    args.push('--output-format', 'json');
+    if (stream) args.push('--output-format', 'stream-json', STREAM_FLAG);
+    else args.push('--output-format', 'json');
     if (model) args.push('--model', model);
-    const result = await run(bin, args, { cwd, env, signal, timeout, input: instructions + prompt });
+    const options = { cwd, env, signal, timeout, input: instructions + prompt };
+    let result;
     let event = null;
-    try {
-      event = JSON.parse(result.stdout);
-    } catch {}
-    if (!event || typeof event !== 'object') event = null;
+    let streamedModel = '';
+    if (stream) {
+      const reader = readCursorStream({ onText, onActivity });
+      const streamed = { onLine: reader.line, keepStdout: false, outputLimit: STREAM_OUTPUT_LIMIT };
+      result = await run(bin, args, { ...options, ...streamed });
+      event = reader.result;
+      streamedModel = reader.model;
+    } else {
+      result = await run(bin, args, options);
+      try {
+        event = JSON.parse(result.stdout);
+      } catch {}
+      if (!isObject(event)) event = null;
+    }
     // The result is the model's answer unless the CLI marked it as an error; only then may it explain a failure.
     const failed = event?.is_error === true;
     if (result.code !== 0 || failed) {
@@ -272,7 +365,12 @@ async function invoke({ bin, run, workDir, signal, prompt, instructions, model, 
     }
     if (typeof event?.result !== 'string' || !event.result.trim())
       throw failureError({ category: 'other', message: 'Cursor 未返回有效的回答。' });
-    return { text: event.result.trim(), model: typeof event.model === 'string' ? event.model : model || '' };
+    const usage = readUsage(event.usage);
+    return {
+      text: event.result.trim(),
+      model: typeof event.model === 'string' ? event.model : streamedModel || model || '',
+      ...(usage && { usage })
+    };
   });
 }
 

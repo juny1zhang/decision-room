@@ -4,6 +4,7 @@ import path from 'node:path';
 import { CATALOG_TIMEOUT } from '../config.mjs';
 import { classifyFailure, errorText, failureError } from '../diagnostics.mjs';
 import { checkCli, EFFORT_ORDER, effortLevels, isModelId } from './common.mjs';
+import { isObject, parseEvent, progressReporter, readUsage } from './stream.mjs';
 
 /**
  * What this adapter expects of the Codex CLI (the format is described in common.mjs): the global flags it
@@ -117,6 +118,58 @@ export function execArgs({ outputFile, model, reasoning, webSearch }) {
   return args;
 }
 
+/**
+ * Reads the events of `codex exec --json` line by line (pass line() as onLine):
+ *   completed  whether a turn.completed event came;
+ *   failed     whether a turn.failed event came;
+ *   errors     the messages of turn.failed and error events, which with stderr are the only output that
+ *              may explain a failure;
+ *   last       the text of the last completed agent message;
+ *   model      the model thread.started names, or '';
+ *   usage      the tokens of the last turn.completed (see readUsage), or null.
+ * The text of agent messages goes to callbacks.onText as it grows in item.started, item.updated and
+ * item.completed events, a later message after a blank line; reasoning and web search items are reported
+ * as activities (see progressReporter).
+ */
+export function readCodexEvents(callbacks) {
+  const progress = progressReporter(callbacks);
+  const shown = new Map(); // agent message id → the text previewed so far
+  const state = { completed: false, failed: false, errors: [], last: '', model: '', usage: null };
+  const item = (type, value) => {
+    if (!isObject(value)) return;
+    if (value.type === 'reasoning') progress.activity('thinking');
+    else if (value.type === 'web_search') progress.activity('searching');
+    if (value.type !== 'agent_message') return;
+    const text = typeof value.text === 'string' ? value.text : '';
+    if (type === 'item.completed') state.last = text;
+    const id = typeof value.id === 'string' ? value.id : '';
+    const before = shown.get(id);
+    if (before && text.startsWith(before)) progress.text(text.slice(before.length));
+    else if (text !== before) {
+      progress.separate();
+      progress.text(text);
+    }
+    shown.set(id, text);
+  };
+  return {
+    state,
+    line(raw) {
+      const event = parseEvent(raw);
+      if (!event) return;
+      if (event.type === 'turn.completed') {
+        state.completed = true;
+        state.usage = readUsage(event.usage, { cacheIncluded: true }) ?? state.usage;
+      } else if (event.type === 'turn.failed') {
+        state.failed = true;
+        state.errors.push(errorText(event.error));
+      } else if (event.type === 'error') state.errors.push(errorText(event));
+      else if (event.type === 'thread.started' && typeof event.model === 'string') state.model = event.model;
+      else if (['item.started', 'item.updated', 'item.completed'].includes(event.type))
+        item(event.type, event.item);
+    }
+  };
+}
+
 async function invoke({
   bin,
   run,
@@ -127,39 +180,20 @@ async function invoke({
   model,
   reasoning,
   webSearch,
-  timeout
+  timeout,
+  onText,
+  onActivity
 }) {
   const outputFile = path.join(workDir, 'answer.txt');
-  let failed = false;
-  // Messages of turn.failed and error events: with stderr, the only output that may explain a failure.
-  const errors = [];
-  let completed = false;
-  let last = '';
-  let reportedModel = '';
+  const events = readCodexEvents({ onText, onActivity });
   const result = await run(bin, execArgs({ outputFile, model, reasoning, webSearch }), {
     input: instructions + prompt,
     cwd: workDir,
     timeout,
     signal,
-    onLine(line) {
-      let event;
-      try {
-        event = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (!event || typeof event !== 'object') return;
-      if (event.type === 'turn.completed') completed = true;
-      if (event.type === 'turn.failed') {
-        failed = true;
-        errors.push(errorText(event.error));
-      }
-      if (event.type === 'error') errors.push(errorText(event));
-      if (event.type === 'item.completed' && event.item?.type === 'agent_message')
-        last = event.item.text || '';
-      if (event.type === 'thread.started' && typeof event.model === 'string') reportedModel = event.model;
-    }
+    onLine: events.line
   });
+  const { completed, failed, errors, last, usage } = events.state;
   // stdout carries the model's own messages, so it never decides what kind of failure this was.
   if (result.code !== 0 || failed)
     throw failureError(classifyFailure({ code: result.code, stderr: result.stderr, errors }));
@@ -172,7 +206,7 @@ async function invoke({
   try {
     text = await fs.readFile(outputFile, 'utf8');
   } catch {}
-  return { text, model: reportedModel || model || 'Codex 默认模型' };
+  return { text, model: events.state.model || model || 'Codex 默认模型', ...(usage && { usage }) };
 }
 
 export default {
