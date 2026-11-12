@@ -1,7 +1,7 @@
 // Rooms and the sidebar: the saved-room list with its search, renaming and deleting a room, opening,
 // starting and exporting a room, the page heading and the off-canvas sidebar on narrow screens.
 import { api, normalError, savePreferences, token } from './api.js';
-import { autosize, updateControls } from './composer.js';
+import { autosize, persistDraft, updateControls } from './composer.js';
 import { $, closeOnBackdropClick, element } from './dom.js';
 import { replaceMessages } from './messages.js';
 import { clearError, showError, toast } from './notices.js';
@@ -41,7 +41,8 @@ export function rememberRoom(id) {
 
 /**
  * Opens or closes the sidebar drawer of narrow screens. Focus moves into the drawer when it opens, and back to
- * the menu button when it closes with focus inside (the closed drawer is hidden, see app.css).
+ * the menu button when it closes with focus inside (the closed drawer is hidden, see app.css). While it is
+ * open, the page under it is inert, so that focus cannot reach the controls it covers.
  */
 export function setSidebar(open) {
   const sidebar = $('sidebar');
@@ -49,8 +50,11 @@ export function setSidebar(open) {
   sidebar.classList.toggle('open', open);
   $('mobileOverlay').classList.toggle('visible', open);
   $('menuButton').setAttribute('aria-expanded', String(open));
+  document.querySelector('.main').inert = open;
+  // Focus in the closing drawer, or lost from it, goes back to the menu button.
+  const lost = sidebar.contains(document.activeElement) || document.activeElement === document.body;
   if (open && !wasOpen) sidebar.focus();
-  else if (!open && wasOpen && sidebar.contains(document.activeElement)) $('menuButton').focus();
+  else if (!open && wasOpen && lost) $('menuButton').focus();
 }
 
 /** The room a discussion is running in, as far as this page knows, or null. */
@@ -180,7 +184,8 @@ function renderRooms() {
   applyFilter();
   if (!focus?.id) return;
   const entry = [...list.querySelectorAll('.room-entry')].find((item) => item.dataset.roomId === focus.id);
-  if (!entry || entry.hidden) return;
+  // Gone, or hidden by the search after a rename: focus goes where focusRoom sends it, not to the page.
+  if (!entry || entry.hidden) return focusRoom(focus.id);
   const control = entry.querySelector(`[data-action="${focus.action}"]`);
   (control && !control.disabled ? control : entry.querySelector('.room-item')).focus();
 }
@@ -203,25 +208,29 @@ export async function refreshRooms() {
 }
 
 /**
- * Opens a saved room. restoreOptions also restores its shared context and configuration; silent
- * suppresses the error banner (used for background refreshes). Only the latest request is shown: an
- * answer is ignored once another room was asked for, a new discussion begun or a discussion started.
+ * Opens a saved room. restoreOptions also restores its shared context and configuration, or only those it
+ * sets to true when it is { context, configuration }; silent suppresses the error banner (used for
+ * background refreshes). Only the latest request is shown: an answer is ignored once another room was asked
+ * for, a new discussion begun or a discussion started. The draft is saved again, now with this room.
  */
 export async function loadRoom(id, { silent = false, restoreOptions = true } = {}) {
   const request = ++loadRequest;
   try {
     const room = await (await api(`/api/rooms/${encodeURIComponent(id)}`)).json();
     if (request !== loadRequest || state.busy) return;
+    const restore =
+      typeof restoreOptions === 'object'
+        ? restoreOptions
+        : { context: restoreOptions, configuration: restoreOptions };
     state.roomId = room.id;
     state.room = room;
-    if (restoreOptions) {
-      state.context = room.context || '';
-      restoreConfiguration(room.configuration);
-    }
+    if (restore.context) state.context = room.context || '';
+    if (restore.configuration) restoreConfiguration(room.configuration);
     rememberRoom(room.id);
     setHeading(room.title);
     replaceMessages(room.messages || []);
     updateControls();
+    persistDraft();
     setSidebar(false);
     await refreshRooms();
     if (!silent) clearError();
@@ -378,11 +387,17 @@ export function setupRooms() {
   $('mobileExport').addEventListener('click', exportRoom);
   $('menuButton').addEventListener('click', () => setSidebar(!$('sidebar').classList.contains('open')));
   $('mobileOverlay').addEventListener('click', () => setSidebar(false));
-  $('sidebar').addEventListener('keydown', (event) => {
+  // Wherever focus is, as it may have left the drawer for the browser's own controls.
+  document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || !$('sidebar').classList.contains('open')) return;
     // Escape closes a dialog, or clears the search, before it closes the drawer.
-    if (event.target.closest('dialog') || (event.target === $('roomSearch') && $('roomSearch').value)) return;
+    if (event.target.closest?.('dialog') || (event.target === $('roomSearch') && $('roomSearch').value))
+      return;
     setSidebar(false);
+  });
+  // The drawer exists on narrow screens only: widening the window closes it, and with it the inert page.
+  matchMedia('(max-width: 760px)').addEventListener('change', (event) => {
+    if (!event.matches) setSidebar(false);
   });
   $('roomSearch').addEventListener('input', applyFilter);
   $('renameForm').addEventListener('submit', rename);

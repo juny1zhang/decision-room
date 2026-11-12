@@ -12,8 +12,10 @@ import { isObject, parseEvent, progressReporter, readUsage, STREAM_OUTPUT_LIMIT 
 const credentialStores = new Map();
 const authenticationError =
   /authentication (?:required|failed)|invalid or expired|unauthenticated|not logged in|\b401\b/i;
+// Cursor prints every service error as a Connect RPC error ("ConnectError: [code] …"): of those, only the
+// transport codes mean a lost connection.
 const connectionLost =
-  /connection lost|writableiterable is closed|econnreset|unavailable:|connecterror|fetch failed/i;
+  /connection lost|writableiterable is closed|econnreset|unavailable:|\[(?:unavailable|deadline_exceeded)\]|fetch failed/i;
 const usageLimit = /rate.?limit|quota|usage.?limit|out of credits|resource.?exhausted/i;
 const modelUnavailable =
   /model.{0,80}(invalid|unavailable|not found|not available|unknown)|cannot use this model|unknown model/i;
@@ -228,12 +230,14 @@ async function inspect(ctx) {
   }
 }
 
-// Cursor's own failure messages, checked in order before the shared ones.
+// Cursor's own failure messages, checked in order before the shared ones. What the service answered comes
+// before a lost connection, which is retried (see discussion.mjs): an expired login, a used-up quota or a
+// refused model is not.
 const CURSOR_FAILURES = [
-  ['network', connectionLost, 'Cursor 与模型服务的连接已中断。请检查网络后重试。'],
   ['auth', authenticationError, 'Cursor 登录已失效。请运行 agent login 后重新检查。'],
   ['quota', usageLimit, 'Cursor 用量或速率已达上限。请检查账号用量后重试。'],
-  ['model', modelUnavailable, 'Cursor 无法使用所选模型。请重新检查连接，并从模型列表选择。']
+  ['model', modelUnavailable, 'Cursor 无法使用所选模型。请重新检查连接，并从模型列表选择。'],
+  ['network', connectionLost, 'Cursor 与模型服务的连接已中断。请检查网络后重试。']
 ];
 
 /**

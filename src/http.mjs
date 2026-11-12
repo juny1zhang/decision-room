@@ -192,6 +192,9 @@ export function createRequestHandler({
         response.write(JSON.stringify({ type: 'error', message: safeDetail(e.message) }) + '\n');
     } finally {
       response.removeListener('close', disconnect);
+      // A run that failed part-way, such as on an answer it could not save, may still have calls running:
+      // stop them, so that none outlives the run and writes to its room after it ended.
+      controller.abort();
       activeRun.end(controller);
       if (!response.writableEnded && !response.destroyed) response.end();
     }

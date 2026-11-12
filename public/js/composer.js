@@ -104,8 +104,9 @@ export function changeMode(mode) {
 }
 
 /**
- * Saves prompt, shared context and configuration to localStorage, debounced by 250 ms. The configuration
- * also goes to the server, which keeps it when the page's address changes.
+ * Saves prompt, shared context and configuration to localStorage, with the open room they belong to,
+ * debounced by 250 ms. The configuration also goes to the server, which keeps it when the page's address
+ * changes.
  */
 export function persistDraft() {
   clearTimeout(draftTimer);
@@ -113,7 +114,12 @@ export function persistDraft() {
     const saved = state.selectionRestored || state.health ? configuration() : undefined;
     storage.set(
       DRAFT_KEY,
-      JSON.stringify({ prompt: $('prompt').value, context: state.context, configuration: saved })
+      JSON.stringify({
+        prompt: $('prompt').value,
+        context: state.context,
+        configuration: saved,
+        roomId: state.roomId
+      })
     );
     if (saved) savePreferences({ configuration: saved });
   }, 250);

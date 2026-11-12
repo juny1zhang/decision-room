@@ -92,16 +92,40 @@ async function listenOnPort(server, requested) {
   }
 }
 
-/** Opens `address` in the default browser on macOS and Linux; failures are ignored. */
-function openBrowser(address, platform = process.platform) {
+/** A page that sends the browser on to `address` at once. */
+export function launcherPage(address) {
+  const url = address.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return (
+    '<!doctype html>\n<meta charset="utf-8">\n<meta name="referrer" content="no-referrer">\n' +
+    `<meta http-equiv="refresh" content="0;url=${url}">\n<title>议事间</title>\n` +
+    `<a href="${url}">打开议事间</a>\n`
+  );
+}
+
+/**
+ * Opens `address` in the default browser on macOS and Linux; failures are ignored. On Linux any local user
+ * can read the arguments of a process (ps, /proc/<pid>/cmdline), and those of xdg-open end up on the
+ * browser's own command line. There the browser opens a launcher page in the private `runtimeDir` instead,
+ * readable only by this user, which sends it on to `address`: the access token stays off command lines.
+ * Resolves to [command, target] as started, or null when nothing was.
+ */
+export async function openBrowser(address, runtimeDir, { platform = process.platform, start = spawn } = {}) {
   const command = { darwin: 'open', linux: 'xdg-open' }[platform];
-  if (!command) return;
+  if (!command) return null;
   try {
+    let target = address;
+    if (platform === 'linux') {
+      target = path.join(runtimeDir, 'open.html');
+      await fs.writeFile(target, launcherPage(address), { mode: 0o600 });
+    }
     // Detached, so the browser neither holds this process open nor receives its Ctrl+C.
-    const opener = spawn(command, [address], { stdio: 'ignore', shell: false, detached: true });
+    const opener = start(command, [target], { stdio: 'ignore', shell: false, detached: true });
     opener.on('error', () => {});
     opener.unref();
-  } catch {}
+    return [command, target];
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -183,7 +207,7 @@ export async function main(argv = process.argv) {
   console.log(banner.join('\n') + '\n');
   // Check every CLI in the background so the page's first status request finds the results ready.
   health.check('full').catch(() => {});
-  if (!argv.includes('--no-open')) openBrowser(address);
+  if (!argv.includes('--no-open')) openBrowser(address, runtimeDir);
 
   let closing = false;
   const shutdown = async () => {

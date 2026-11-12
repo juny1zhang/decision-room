@@ -6,6 +6,8 @@ import { $, closeOnBackdropClick, element } from './dom.js';
 import { activeCapabilities, isSingle, providerName, providers, ready, state } from './state.js';
 
 let configDraft;
+/** The status check the dialog opened with (see renderProviderFields). */
+let configHealth = null;
 
 const COUNTS = ['零', '一', '两', '三', '四', '五', '六', '七', '八', '九', '十'];
 /** "两", "三"… as in "两到三位"; digits past ten. */
@@ -17,9 +19,14 @@ function addOption(select, value, label) {
   select.append(option);
 }
 
-function field(parent, labelText, id, control, extraClass = '') {
+/**
+ * A labelled `control` of provider `provider`. Every card has the same fields, so the label also names the
+ * provider for screen readers ("Codex 模型").
+ */
+function field(parent, provider, labelText, id, control, extraClass = '') {
   const wrap = element('div', ('option-field ' + extraClass).trim());
-  const label = element('label', 'option-label', labelText);
+  const label = element('label', 'option-label');
+  label.append(element('span', 'sr-only', providerName(provider) + ' '), labelText);
   control.id = id;
   label.htmlFor = id;
   wrap.append(label, control);
@@ -28,12 +35,14 @@ function field(parent, labelText, id, control, extraClass = '') {
 }
 
 function renderProviderFields(id, card) {
-  // A failed status check clears state.health, also while this dialog is open.
-  const info = state.health?.[id] || {};
+  // A failed status check clears state.health, also while this dialog is open: the fields keep the models,
+  // reasoning levels and capabilities of the check the dialog opened with, so that no choice is dropped.
+  const health = state.health || configHealth;
+  const info = health?.[id] || {};
   const choice = (configDraft.settings[id] ||= { model: '', reasoning: '', capability: 'general' });
   const fields = element('div', 'provider-fields');
   const modelSelect = element('select');
-  const modelField = field(fields, '模型', 'model-' + id, modelSelect, 'model-field');
+  const modelField = field(fields, id, '模型', 'model-' + id, modelSelect, 'model-field');
   addOption(modelSelect, '', 'CLI 默认模型');
   for (const model of info.models || []) addOption(modelSelect, model, model);
   addOption(modelSelect, '__custom', '手动输入模型 ID…');
@@ -53,13 +62,13 @@ function renderProviderFields(id, card) {
   modelField.append(custom);
 
   const capability = element('select');
-  field(fields, '分析能力', 'capability-' + id, capability);
-  const options = activeCapabilities();
+  field(fields, id, '分析能力', 'capability-' + id, capability);
+  const options = health?.capabilities || activeCapabilities();
   for (const item of options) addOption(capability, item.id, item.label);
   capability.value = options.some((item) => item.id === choice.capability) ? choice.capability : 'general';
   choice.capability = capability.value;
   const reasoning = element('select');
-  const reasoningField = field(fields, '推理强度', 'reasoning-' + id, reasoning);
+  const reasoningField = field(fields, id, '推理强度', 'reasoning-' + id, reasoning);
   function refreshReasoning() {
     const perModel = info.reasoningByModel || {};
     const levels = Object.hasOwn(perModel, choice.model)
@@ -157,6 +166,7 @@ function renderConfiguration() {
 }
 
 function openConfiguration() {
+  configHealth = state.health;
   configDraft = {
     participants: [...state.participants],
     moderator: state.moderator,

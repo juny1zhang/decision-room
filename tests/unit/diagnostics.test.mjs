@@ -288,6 +288,16 @@ test('Cursor failures use its own classifier on stderr and error results only', 
     'model',
     'Cursor 无法使用所选模型。请重新检查连接，并从模型列表选择。'
   );
+  // Every service error is a ConnectError: only the transport codes are a lost connection, which is retried.
+  for (const [stderr, category] of [
+    ['ConnectError: [unauthenticated] Authentication required', 'auth'],
+    ['ConnectError: [resource_exhausted] You have hit your usage limit', 'quota'],
+    ['ConnectError: [permission_denied] Model not available', 'model'],
+    ['Error: Model unavailable: mock-x', 'model'],
+    ['ConnectError: [deadline_exceeded] the operation timed out', 'network'],
+    ['ConnectError: [invalid_argument] bad request', 'other']
+  ])
+    assert.equal(classifyCursorFailure({ code: 1, stderr }).category, category, stderr);
   // Failures Cursor's own patterns do not name fall back to the shared ones.
   await failsWith(
     cursor,

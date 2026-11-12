@@ -5,7 +5,8 @@
 // registry order. Until that first answer the page shows the three providers Decision Room ships with, so
 // the first paint looks as it always has. Colours and avatar glyphs live in app.css, keyed by the
 // data-provider attribute; a provider without rules there gets neutral colours and the first character
-// of its label as its avatar. Adding a provider to the server's registry therefore needs no change here.
+// of its label as its avatar. A provider added to the server's registry needs one change here: an entry in
+// DEFAULT_PROVIDERS, which a unit test keeps equal to the registry.
 
 /** The providers Decision Room ships with, shown until the server lists its registry. */
 export const DEFAULT_PROVIDERS = Object.freeze([

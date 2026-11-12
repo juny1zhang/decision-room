@@ -77,7 +77,7 @@ node server.mjs --debug    # Print diagnostics in the terminal
 
 Debug mode prints lines starting with `[debug]` to the terminal: the command, arguments, folder, exit code, duration and error output of every CLI call, the results of connection checks, and the path and status of each request. Questions and answers are never printed, and keys, tokens and e-mail addresses in error output are hidden. The output can still contain local paths, your user name and fragments of CLI error messages, so read it before you share it.
 
-Live testing on macOS returned answers from Codex and Claude Code. Cursor login and model discovery succeeded, but its generation stream repeatedly disconnected in both Decision Room and the native CLI. If you encounter this, try `agent --mode ask` in an empty directory and send a short question to check your connection. The automated tests exercise all three adapters with simulated CLIs, including a full three-participant discussion and live previews. The arguments the adapters pass are also checked against the help output of the real CLIs, and again every week against their latest releases.
+Live testing on macOS returned answers from Codex and Claude Code. Cursor login and model discovery succeeded, but its generation stream repeatedly disconnected in both Decision Room and the native CLI. If you encounter this, try `agent --mode ask` in an empty directory and send a short question to check your connection. The automated tests exercise all three adapters with simulated CLIs, including a full three-participant discussion and live previews. The arguments the adapters pass to Codex and Claude Code are also checked against the help output of the real CLIs, and again every week against their latest releases. Cursor Agent's help output has not been captured yet, so its arguments are only checked against the simulated CLI; the weekly check runs the latest Cursor Agent too, but its result does not fail the check yet.
 
 ## Platform support
 
@@ -92,7 +92,7 @@ On Windows, CLIs installed with npm are `.cmd` shims, which Node.js cannot start
 ## Design decisions
 
 - **Chinese only.** The interface and the prompts are written in Chinese, and the models are asked to answer in Chinese. There is no other language yet.
-- **Subscription logins only.** Before starting a CLI, Decision Room removes API key variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `CURSOR_API_KEY`, as well as the Bedrock and Vertex settings of Claude Code and Cursor, so that a discussion is never billed to an API account by surprise. The **工具连接** (Tool connections) dialog lists the variables it ignored.
+- **Subscription logins only.** Before starting a CLI, Decision Room removes API key variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `CURSOR_API_KEY`, as well as the Bedrock and Vertex settings of Claude Code and Cursor, so that a discussion is never billed to an API account by surprise. The **工具连接** (Tool connections) dialog names the API key variables it ignored.
 - **No runtime dependencies.** The app uses only Node.js built-in modules and runs straight from the clone, with no third-party runtime code to audit or update. ESLint, Prettier and Playwright are development tools only.
 - **Local only.** The service listens on `127.0.0.1` only, checks the Host and Origin of every request and creates a new access token at every launch. There are no user accounts and no remote access.
 

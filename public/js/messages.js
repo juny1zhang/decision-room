@@ -281,15 +281,31 @@ export function refreshProviderNames() {
   }
 }
 
+/** Counts the renders of a whole room, so that only the latest one turns its live region back on. */
+let roomRenders = 0;
+
+/**
+ * Shows the saved `messages` of a room in place of the conversation. They are not news: the live region
+ * of #messages is off while they are added and until the next frame has been drawn, so that screen readers
+ * announce only the messages a run adds afterwards, not the whole transcript.
+ */
 export function replaceMessages(messages) {
   state.messages = [];
   state.seen.clear();
   clearPreviews();
-  $('messages').replaceChildren();
+  const list = $('messages');
+  list.setAttribute('aria-live', 'off');
+  list.replaceChildren();
   $('emptyState').hidden = messages.length > 0;
   for (const message of messages) appendMessage(message, false);
   updateResume();
-  requestAnimationFrame(toBottom);
+  const render = ++roomRenders;
+  requestAnimationFrame(() => {
+    toBottom();
+    setTimeout(() => {
+      if (render === roomRenders) list.setAttribute('aria-live', 'polite');
+    });
+  });
 }
 
 /**

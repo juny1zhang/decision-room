@@ -31,11 +31,13 @@ import { restoreConfiguration, state } from './js/state.js';
 
 async function init() {
   if (!/Mac|iPhone|iPad/.test(navigator.platform)) $('keyHint').textContent = 'Ctrl Enter 发送';
+  let draftRoomId = null; // the room the draft was written in
   try {
     const draft = JSON.parse(storage.get(DRAFT_KEY) || '{}');
     restoreConfiguration(draft.configuration || draft);
     state.context = typeof draft.context === 'string' ? draft.context : '';
     $('prompt').value = typeof draft.prompt === 'string' ? draft.prompt : '';
+    if (typeof draft.roomId === 'string') draftRoomId = draft.roomId;
   } catch {}
   autosize();
   if (!token) {
@@ -53,10 +55,13 @@ async function init() {
     updateControls();
   }
   selected ||= preferences.selectedRoomId;
+  // Reopening the room shown last keeps what was restored above: the shared context of a draft written in
+  // that room, which may not have been sent yet, and a configuration from the draft or the preferences.
+  const restoreOptions = { context: draftRoomId !== selected, configuration: !state.selectionRestored };
   await Promise.allSettled([
     checkHealth(),
     refreshRooms(),
-    selected ? loadRoom(selected, { silent: true }) : Promise.resolve()
+    selected ? loadRoom(selected, { silent: true, restoreOptions }) : Promise.resolve()
   ]);
 }
 

@@ -185,6 +185,10 @@ button svg {
 .new-button:hover {
   background: #edf2eb;
 }
+/* Stands in for the top bar's export button, on narrow screens only (see the media query below). */
+#mobileExport {
+  display: none;
+}
 .sidebar-label {
   font-size: 11px;
   letter-spacing: 1.3px;
@@ -947,8 +951,8 @@ button svg {
   background: #f7faf3;
   padding: 10px 15px;
   margin: 14px 0;
-  /* Also inside a list item, whose own lines keep their breaks. */
-  white-space: normal;
+  /* Quoted lines keep their breaks, as in paragraphs, so that a quoted list does not run together. */
+  white-space: pre-line;
 }
 .message-body hr {
   border: 0;
@@ -1035,6 +1039,14 @@ button svg {
 .composer:focus-within {
   border-color: #a2b797;
   box-shadow: 0 0 0 3px rgba(97, 130, 74, 0.04);
+}
+/*
+ * The prompt draws no outline of its own (see .prompt): a 2px ring of the composer shows its focus, at 6.4:1
+ * on white and 4.9:1 against the border at rest. The other controls keep their own outlines.
+ */
+.composer:has(.prompt:focus-visible) {
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px var(--green);
 }
 .mode-row {
   display: flex;
@@ -1651,6 +1663,9 @@ dialog::backdrop {
   }
   .export-button {
     display: none;
+  }
+  #mobileExport {
+    display: flex;
   }
   .error-banner {
     margin: 12px 14px 0;

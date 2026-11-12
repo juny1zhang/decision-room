@@ -41,7 +41,10 @@ export const MAX_PROMPT = 20000;
 export const MAX_CONTEXT = 40000;
 /** Messages after which a room no longer accepts follow-up questions. */
 export const MAX_MESSAGES = 500;
-/** Characters of the first question used as the room title. */
+/**
+ * Most visible characters (grapheme clusters, the closing "…" included) of a new room's default title,
+ * which src/titles.mjs makes from the first non-empty line of its first question.
+ */
 export const TITLE_LENGTH = 38;
 export const HEARTBEAT_INTERVAL = 15000;
 

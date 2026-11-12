@@ -17,7 +17,7 @@
 - **设置跟着数据目录走。** 讨论设置和打开的讨论保存在数据目录的 `preferences.json`，重启、换端口或换浏览器后都能恢复。未发送的草稿仍保存在浏览器里。
 - **固定端口。** 访问地址默认使用端口 41710，每次启动都一样；端口被占用时改用随机端口并在终端说明。`DECISION_ROOM_PORT` 可以指定端口，`0` 表示随机端口。
 - **调试模式。** `--debug` 或 `DECISION_ROOM_DEBUG=1` 在终端输出 CLI 调用、连接检查和请求的诊断信息。输出不含问题和回答，凭证会被隐藏，但可能包含本机路径和 CLI 错误信息的片段，分享前请检查。
-- **Linux。** 启动后用 `xdg-open` 打开浏览器。
+- **Linux。** 启动后用 `xdg-open` 打开浏览器。访问凭证经由只有当前用户能读取的本地文件交给浏览器，不会出现在其他用户也能看到的命令行里。
 - 「工具连接」会提示被忽略的 API Key 环境变量。
 
 ### 改进
@@ -37,8 +37,14 @@
 - **长回答后历史被丢弃。** 只要最近一条回答超过 48,000 字符的历史预算，服务端就完全不发送历史，提示词还声称「这是新讨论」。现在超过 12,000 字符的发言只保留开头和结尾，问题和主持人总结优先保留，省略的地方会注明。
 - **错误原因判断有误。** 之前也从模型自己的回答里判断失败原因，所以回答中提到额度或登录的网络故障会被报成额度或登录问题，过期的证书也会被报成登录过期。现在只依据 CLI 的错误输出和它报告的结构化错误分类，更多连接失败会被识别为网络问题。
 - 快速连续打开两场讨论时，显示的是后打开的那场。
-- 窄屏上收起的侧栏不再获得焦点；打开时焦点移入，按 Escape 关闭。
-- 连接检查失败后，「模型与能力」对话框不再出错。
+- 窄屏上收起的侧栏不再获得焦点；打开时焦点移入，被侧栏遮住的页面不会获得焦点，在任何位置按 Escape 都能关闭。
+- 连接检查失败后，「模型与能力」对话框不再出错，也不再清空已选的推理强度和分析能力。
+- 重新打开页面或重启后，未发送的共同背景不再被讨论保存的背景覆盖，之后改过的设置也不再被这场讨论上一轮的设置覆盖。
+- 打开讨论时，读屏软件不再朗读全部记录；「模型与能力」中的字段名称包含参与者名称；输入框获得焦点时有清晰的边框。
+- 发送、停止或「重试未完成的部分」后，键盘焦点回到输入框；重命名后讨论被搜索隐藏时，焦点移到「新的讨论」。
+- 宽屏侧栏不再多出一个「导出当前讨论」按钮；引用保留换行，引用中的列表不再挤成一行。
+- Cursor 的登录、额度和模型错误不再被当作连接中断，因此不会被自动重试。
+- 保存讨论失败时，仍在运行的调用随之停止，不会在讨论结束后再写回记录。
 - 请求内容过大时，浏览器能收到完整的错误提示。
 - 检查 CLI 参数时按完整的参数名匹配，`--mode` 不再因为帮助中有 `--model` 而被当作受支持。
 - 损坏的讨论记录会给出明确提示；讨论列表跳过无法读取的文件，缺少更新时间的记录按创建时间或文件时间排序。
@@ -61,7 +67,7 @@
 
 - **New:** live answer previews while a CLI writes, with thinking and web-search status; each answer's duration and token counts, also in the export; one automatic retry when a connection drops; a joint discussion continues when at least two participants answered, with a notice about who is missing; **重试未完成的部分** reruns only the missing parts of an incomplete round; search, rename and delete discussions in the sidebar; new discussions are named after their first question; richer Markdown (bare URLs, emphasis, strikethrough, nested lists, code captions, table alignment); settings and the open discussion saved in `preferences.json`; a fixed port, 41710, with `DECISION_ROOM_PORT` to override it; a debug mode (`--debug` or `DECISION_ROOM_DEBUG=1`); the browser opens on Linux with `xdg-open`.
 - **Improved:** the shared context is recorded per question; prompts use tagged sections and per-stage size budgets; exports use Chinese stage names and local times with the UTC offset; connection checks are reused, run in parallel and warm up at startup; connection status no longer relies on colour alone, and the page meets WCAG AA contrast with no text below 11px.
-- **Fixed:** settings were lost on restart because every launch used a new random port; one long answer dropped the whole history and the prompt claimed a new discussion; failures were classified from the model's own answer, so a network error could be reported as a quota or login problem and an expired certificate as an expired login.
+- **Fixed:** settings were lost on restart because every launch used a new random port; one long answer dropped the whole history and the prompt claimed a new discussion; failures were classified from the model's own answer, so a network error could be reported as a quota or login problem and an expired certificate as an expired login. Also: reopening the page no longer replaces an unsent shared context or newer settings with the open discussion's saved ones; Cursor login, quota and model errors are no longer retried as lost connections; a failed save stops the calls still running; on Linux the access token stays off command lines; and keyboard and screen-reader use is better (focus after a round, in the drawer and after a rename, field names, no re-reading of a whole discussion, a visible prompt focus).
 - **Breaking:** Node.js 22 or newer is required; data now defaults to the operating system's application data folder (a legacy `data/` folder that holds discussions is still used, and `DECISION_ROOM_DATA_DIR` still overrides both); a missing or wrong access token on `/api/` now answers 401 instead of 403, and unknown paths outside it a JSON 404.
 - **Development:** the code is split into `src/` and `public/` modules with a provider registry; ESLint, Prettier and Playwright are development tools; CI runs on Ubuntu and macOS with Node.js 22, 24 and 26; adapter contracts are checked against captured CLI help and, every week, against the latest CLI releases; `package.json` gains `bin` and `files`.
 

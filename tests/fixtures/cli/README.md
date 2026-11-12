@@ -24,7 +24,7 @@ Keep the files byte for byte as captured: `.prettierignore` and the ESLint confi
 
 ## Cursor Agent
 
-No Cursor Agent output is captured: its installer (`curl https://cursor.com/install -fsS | bash`) was blocked in the sandbox where these files were made. The Cursor adapter is covered only by the hand-written mock in `tests/support/mock-cli.mjs`. The canary workflow installs the latest Cursor Agent and checks it, but that path could not be verified, so its result does not fail the workflow. To close the gap, capture `agent --version`, `agent --help` and `agent status --help` as `cursor-<version>-version.txt`, `-help.txt` and `-status-help.txt`, and add them to `CAPTURED` in the contract test.
+No Cursor Agent output is captured: its installer (`curl https://cursor.com/install -fsS | bash`) was blocked in the sandbox where these files were made. The Cursor adapter is covered only by the hand-written mock in `tests/support/mock-cli.mjs`. The canary workflow installs the latest Cursor Agent and checks it, but that path could not be verified, so its result does not fail the workflow. To close the gap, capture `agent --version`, `agent --help` and `agent status --help` as `cursor-<version>-version.txt`, `-help.txt` and `-status-help.txt`, and add them to `CAPTURED` in the contract test. Also add `cursor: ['--version', '--help']` to `expected` in its test "the check before a CLI is first used accepts the captured … output": those are the commands that check runs, `--version` and each help command with required flags. Once the canary's Cursor job has passed, remove its `continue-on-error`.
 
 ## Refreshing a capture
 

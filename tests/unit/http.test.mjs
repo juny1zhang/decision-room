@@ -5,6 +5,7 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { createActiveRun } from '../../src/discussion.mjs';
 import { createRequestHandler, readStaticFile, resolveStaticPath } from '../../src/http.mjs';
 import { createPreferenceStore } from '../../src/preferences.mjs';
 
@@ -392,4 +393,51 @@ test('debug lines name the method, path, status and duration, never the token', 
   assert.match(lines[1], /^http GET \/api\/rooms\/\[token\] 404 \d+ ms$/);
   assert.match(lines[2], /^http GET \/api\/health 401 \d+ ms$/);
   assert.ok(!lines.join('\n').includes(TOKEN));
+});
+
+test('a run that fails part-way stops its other calls, so none writes to the room later', async (t) => {
+  const activeRun = createActiveRun();
+  const ready = { available: true, authenticated: true, subscription: true, supportsWeb: true };
+  const saves = [];
+  const rooms = {
+    list: async () => [],
+    // The question is saved; the first answer cannot be (a full disk).
+    save: async (room) => {
+      saves.push(room.messages.length);
+      if (saves.length === 2) throw new Error('ENOSPC: no space left on device');
+    }
+  };
+  let stopped = false;
+  const invoke = (id, _prompt, _webSearch, signal) =>
+    id === 'codex'
+      ? Promise.resolve({ text: 'Codex 的分析', model: 'mock-codex' })
+      : new Promise((_resolve, reject) =>
+          signal.addEventListener('abort', () => {
+            stopped = true;
+            reject(new Error('讨论已停止。'));
+          })
+        );
+  const { request } = await serve(t, {
+    activeRun,
+    rooms,
+    invoke,
+    health: { check: async () => ({ codex: ready, claude: ready }) }
+  });
+  const response = await request('/api/run', {
+    method: 'POST',
+    headers: authorized({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ prompt: '选哪个方案？', mode: 'debate', participants: ['codex', 'claude'] })
+  });
+  const events = response.body
+    .toString('utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.equal(events.at(-1).type, 'error');
+  assert.match(events.at(-1).message, /ENOSPC/);
+  // Claude's call was stopped with the run, which no longer holds the room.
+  assert.equal(stopped, true);
+  assert.equal(activeRun.isBusy(), false);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(saves, [1, 2], 'nothing is saved after the run ended');
 });

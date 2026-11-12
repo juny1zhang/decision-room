@@ -22,6 +22,24 @@ let elapsedTimer;
 let newRoomPending = false;
 /** Set while the run resumes an incomplete turn rather than asking the question in the composer. */
 let resuming = false;
+/** Set once keyboard focus was on the stop button during a run, so that it returns to the prompt after. */
+let focusOnStop = false;
+
+/**
+ * Moves keyboard focus to the stop button: a run disables the prompt and hides the send and resume buttons
+ * (see updateControls), which would leave focus nowhere.
+ */
+function focusStop() {
+  $('stopButton').focus();
+  focusOnStop = document.activeElement === $('stopButton');
+}
+
+/** Once a run has ended, gives focus that was on the stop button, now hidden, back to the prompt. */
+function restoreFocus() {
+  const active = document.activeElement;
+  if (focusOnStop && (!active || active === document.body || active === $('stopButton'))) $('prompt').focus();
+  focusOnStop = false;
+}
 
 /**
  * Applies one event of the run stream: room | message | delta | status | error | done (see
@@ -152,6 +170,7 @@ async function startRun(body, { resume = false } = {}) {
     resuming = false;
     stopElapsedClock();
     updateControls();
+    restoreFocus();
     // A complete stream already showed every message; only the sidebar's counts and order changed.
     // After an early end or an error, show what the server saved.
     if (streamed && complete && !failed) await refreshRooms();
@@ -164,7 +183,11 @@ async function submit(event) {
   event.preventDefault();
   const prompt = $('prompt').value.trim();
   if (!prompt || state.busy || state.serverBusy || !canUseMode()) return;
-  await startRun({ roomId: state.roomId, prompt, context: state.context, ...configuration() });
+  // Sent from the keyboard: Cmd/Ctrl+Enter in the prompt, or Enter on the focused send button.
+  const keyboard = document.activeElement === $('prompt') || $('sendButton').matches(':focus-visible');
+  const run = startRun({ roomId: state.roomId, prompt, context: state.context, ...configuration() });
+  if (keyboard) focusStop();
+  await run;
 }
 
 /** Runs what is missing of turn `turnId`, the open room's latest, with the settings it was asked with. */
@@ -172,12 +195,14 @@ async function resume(turnId) {
   if (!turnId || !state.roomId || state.busy || state.serverBusy) return;
   const run = startRun({ roomId: state.roomId, resumeTurnId: turnId }, { resume: true });
   // The button goes while the turn runs; keep the keyboard focus on the way to stop it.
-  $('stopButton').focus();
+  focusStop();
   await run;
 }
 
 async function stop() {
   if (state.stopping) return;
+  // Disabled while it stops: the focus it loses goes to the prompt once the run has ended.
+  if (document.activeElement === $('stopButton')) focusOnStop = true;
   state.stopping = true;
   updateControls();
   try {
@@ -187,6 +212,7 @@ async function stop() {
       state.serverBusy = false;
       state.stopping = false;
       updateControls();
+      restoreFocus();
       if (state.roomId) await loadRoom(state.roomId, { silent: true });
       await checkHealth();
     }

@@ -1,6 +1,7 @@
 // Browser tests of saved discussions: searching, renaming and deleting them in the sidebar, exporting one as
 // Markdown and how answers render their Markdown. The rooms are written to the data folder before the page
 // opens; every flow ends without console errors, page errors or CSP violations.
+/* global document, getComputedStyle, MutationObserver */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -76,9 +77,23 @@ test('the sidebar searches, renames and deletes saved discussions', TIMEOUT, asy
   await page.locator('#roomFilterEmpty').waitFor({ state: 'hidden' });
   assert.equal((await shownTitles(page)).length, 3);
 
+  // The live region of the messages is off while a room's saved messages are added: screen readers do not
+  // read out the whole transcript.
+  await page.evaluate(() => {
+    const list = document.getElementById('messages');
+    globalThis.liveWhenAdded = [];
+    new MutationObserver((records) => {
+      for (const record of records)
+        for (const node of record.addedNodes)
+          if (node.classList?.contains('message'))
+            globalThis.liveWhenAdded.push(list.getAttribute('aria-live'));
+    }).observe(list, { childList: true });
+  });
   await openRoom(page, 1, '周末旅行计划');
   await page.locator('#messages .message-body', { hasText: '关于「周末旅行计划」的回答' }).waitFor();
   assert.equal(await entry(page, 1).locator('.room-item').getAttribute('aria-current'), 'true');
+  assert.deepEqual(await page.evaluate(() => globalThis.liveWhenAdded), ['off', 'off']);
+  await page.locator('#messages[aria-live="polite"]').waitFor({ state: 'attached' });
 
   // Rename a room that is not open; an empty title is refused.
   const renameDialog = page.locator('#renameDialog');
@@ -106,6 +121,17 @@ test('the sidebar searches, renames and deletes saved discussions', TIMEOUT, asy
   await page.locator('#roomHeading', { hasText: '周末短途旅行' }).waitFor();
   await entry(page, 1).locator('.room-item-title', { hasText: '周末短途旅行' }).waitFor();
 
+  // A rename that the search no longer matches moves focus to "新的讨论" rather than losing it.
+  await search.fill('方案');
+  await page.getByRole('button', { name: '重命名「架构方案评审」' }).focus();
+  await page.keyboard.press('Enter');
+  await titleInput.fill('架构评审');
+  await titleInput.press('Enter');
+  await page.locator('#roomFilterEmpty', { hasText: '没有匹配的讨论' }).waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'newRoom');
+  await search.fill('');
+  assert.deepEqual(await shownTitles(page), ['周末短途旅行', '架构评审', 'Budget 预算复盘']);
+
   // Delete a room that is not open: cancelling keeps it.
   const deleteDialog = page.locator('#deleteDialog');
   await page.getByRole('button', { name: '删除「Budget 预算复盘」' }).click();
@@ -129,7 +155,9 @@ test('the sidebar searches, renames and deletes saved discussions', TIMEOUT, asy
   await page.locator('#roomHeading', { hasText: '新的讨论' }).waitFor();
   await page.locator('#emptyState').waitFor();
   assert.equal(await page.locator('#messages .message').count(), 0);
-  assert.deepEqual(await shownTitles(page), ['架构方案评审']);
+  // The list is read again from the server.
+  await entry(page, 1).waitFor({ state: 'detached' });
+  assert.deepEqual(await shownTitles(page), ['架构评审']);
   await until(
     async () => (await getJson(h, '/api/preferences')).selectedRoomId === null,
     'the deleted room is no longer the selected one'
@@ -162,6 +190,18 @@ test('exporting downloads the discussion as the server writes it', TIMEOUT, asyn
   const { page } = session;
   assert.equal(await page.locator('#exportButton').isDisabled(), true);
   await openRoom(page, 7, title);
+  // One export button: the top bar's, or on a narrow screen the sidebar's.
+  const exportButtons = page.getByRole('button', { name: '导出当前讨论' });
+  assert.equal(await exportButtons.count(), 1);
+  assert.equal(await page.locator('#mobileExport').isVisible(), false);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('#exportButton').waitFor({ state: 'hidden' });
+  await page.getByRole('button', { name: '打开讨论记录' }).click();
+  await page.locator('#mobileExport').waitFor();
+  assert.equal(await exportButtons.count(), 1);
+  await page.keyboard.press('Escape');
+  await page.locator('#sidebar.open').waitFor({ state: 'detached' });
+  await page.setViewportSize({ width: 1280, height: 800 });
   const [download] = await Promise.all([
     page.waitForEvent('download'),
     page.locator('#exportButton').click()
@@ -188,6 +228,10 @@ test('answers render Markdown: links, autolinks, nested lists, tables and code',
       '也可以直接打开 https://example.net/plain。',
     '',
     '危险链接 [不要点](javascript:alert(1)) 只显示文字。',
+    '',
+    '> 风险：',
+    '> - 成本上升',
+    '> - 工期延误',
     '',
     '1. 第一步',
     '   - 子项 A',
@@ -236,6 +280,10 @@ test('answers render Markdown: links, autolinks, nested lists, tables and code',
   ]);
   // A javascript: link stays text.
   await body.locator('p', { hasText: '危险链接 [不要点](javascript:alert(1)) 只显示文字。' }).waitFor();
+  // A quote keeps its line breaks, so a quoted list does not run together.
+  const quote = body.locator('blockquote');
+  assert.equal(await quote.evaluate((node) => getComputedStyle(node).whiteSpace), 'pre-line');
+  assert.equal(await quote.evaluate((node) => node.innerText), '风险：\n- 成本上升\n- 工期延误');
 
   // Nested lists: an ordered list holding a bullet list holding an ordered list.
   const outer = body.locator(':scope > ol');

@@ -1,7 +1,7 @@
 // Browser tests of the conversation: the first load, the "模型与能力" dialog, a "分别回答" round with live
 // previews, stopping a hanging call and "重试未完成的部分" after a failed one. The server runs the mock CLIs
 // of tests/support/mock-cli.mjs; every flow ends without console errors, page errors or CSP violations.
-/* global document, MutationObserver */
+/* global document, getComputedStyle, MutationObserver */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -46,6 +46,10 @@ async function ask(page, mode, prompt) {
 /** Waits until the round has ended: the send button is back. */
 const roundEnded = (page) => page.locator('#sendButton').waitFor();
 
+/** Waits until keyboard focus is on the element with `id`. */
+const focusOn = (page, id) =>
+  until(() => page.evaluate((id) => document.activeElement?.id === id, id), `focus is on #${id}`);
+
 test('the first load shows every tool as ready, by name and by status', TIMEOUT, async (t) => {
   const h = await harness(t);
   const session = await openApp(t, browser, h);
@@ -71,6 +75,12 @@ test('the first load shows every tool as ready, by name and by status', TIMEOUT,
   assert.equal(await page.locator('#sendButton').isDisabled(), true);
   await page.locator('#prompt').fill('先比较两个方案的成本');
   assert.equal(await page.locator('#sendButton').isEnabled(), true);
+  // The focused prompt shows a ring of the composer in the page's green, 6.4:1 on white.
+  await page.locator('#prompt').focus();
+  assert.equal(
+    await page.locator('#composer').evaluate((form) => getComputedStyle(form).borderTopColor),
+    'rgb(39, 105, 91)'
+  );
   await assertReadable(page, 'on the first load');
 
   // A pill opens the connection dialog, which also names the ignored API-key variables.
@@ -92,6 +102,15 @@ test('the first load shows every tool as ready, by name and by status', TIMEOUT,
   await page.getByRole('button', { name: '打开讨论记录' }).click();
   await page.locator('#sidebar.open').waitFor();
   await assertReadable(page, 'in the sidebar drawer');
+  // Focus does not reach the page the drawer covers, and Escape closes the drawer wherever focus is.
+  for (let step = 0; step < 6; step++) {
+    await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest('.main'))), false);
+  }
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.press('Escape');
+  await page.locator('#sidebar.open').waitFor({ state: 'detached' });
+  await focusOn(page, 'menuButton');
   assertClean(session);
 
   // The guard does see a violation: a <style> element, which the policy refuses.
@@ -136,6 +155,10 @@ test(
     await page.locator('#participant-claude').click();
     await page.locator('#participant-cursor').click();
     await dialog.locator('#configCount', { hasText: '已选 3 位参与者' }).waitFor();
+    // Every card has the same fields; their names say whose they are.
+    for (const name of ['Codex 模型', 'Claude 分析能力', 'Cursor 模型'])
+      await dialog.getByRole('combobox', { name, exact: true }).waitFor();
+    assert.equal(await dialog.getByRole('combobox', { name: '模型', exact: true }).count(), 0);
 
     // Codex: a listed model and its reasoning levels.
     await page.locator('#model-codex').selectOption('mock-codex');
@@ -146,6 +169,18 @@ test(
       'high'
     ]);
     await page.locator('#reasoning-codex').selectOption('high');
+    // A status check that fails while the dialog is open clears the page's health. The cards, drawn again
+    // on the next change, keep the listed model and the reasoning level chosen here.
+    await page.evaluate(async () => {
+      const { state } = await import('/js/state.js');
+      state.health = null;
+    });
+    await page.locator('#participant-cursor').click();
+    await page.locator('#participant-cursor').click();
+    await dialog.locator('#configCount', { hasText: '已选 3 位参与者' }).waitFor();
+    assert.equal(await page.locator('#model-codex').inputValue(), 'mock-codex');
+    assert.equal(await page.locator('#reasoning-codex').inputValue(), 'high');
+    await page.evaluate(async () => (await import('/js/health.js')).checkHealth());
     // Claude: a model without reasoning levels hides the field; a capability shows its description.
     await page.locator('#model-claude').selectOption('haiku');
     await page.locator('#reasoning-claude').waitFor({ state: 'hidden' });
@@ -222,12 +257,19 @@ test('分别回答 shows live previews that the final answers replace', TIMEOUT,
   });
   const session = await openApp(t, browser, h);
   const { page } = session;
-  // Every preview card added, kept even after its answer replaced it.
+  // Every preview card added, kept even after its answer replaced it, and the state of the messages' live
+  // region as each message was added.
   await page.evaluate(() => {
     globalThis.previewCards = [];
+    globalThis.liveWhenAdded = [];
+    const list = document.getElementById('messages');
     new MutationObserver((records) => {
       for (const record of records)
-        for (const node of record.addedNodes) if (node.dataset?.preview) globalThis.previewCards.push(node);
+        for (const node of record.addedNodes) {
+          if (node.dataset?.preview) globalThis.previewCards.push(node);
+          if (record.target === list && node.classList?.contains('message'))
+            globalThis.liveWhenAdded.push(list.getAttribute('aria-live'));
+        }
     }).observe(document.getElementById('conversation'), { childList: true, subtree: true });
   });
 
@@ -247,6 +289,8 @@ test('分别回答 shows live previews that the final answers replace', TIMEOUT,
   await roundEnded(page);
   assert.equal(await page.locator('#livePreviews .message').count(), 0);
   assert.equal(await page.locator('#messages .message.preview').count(), 0);
+  // The question and both answers were announced as they arrived.
+  assert.deepEqual(await page.evaluate(() => globalThis.liveWhenAdded), ['polite', 'polite', 'polite']);
 
   const previews = await page.evaluate(() =>
     globalThis.previewCards.map((card) => ({
@@ -290,7 +334,14 @@ test('停止讨论 ends a hanging call and keeps the answers already given', TIM
   const h = await harness(t, { claude: { hang: true } });
   const session = await openApp(t, browser, h);
   const { page } = session;
-  await ask(page, '分别回答', '这个决定有哪些风险？');
+  // Sent from the keyboard: focus moves to the stop button, as the prompt is locked during the round.
+  await page.getByRole('button', { name: '分别回答', exact: true }).click();
+  await page.locator('#prompt').fill('这个决定有哪些风险？');
+  await Promise.all([
+    page.waitForRequest((request) => request.url().endsWith('/api/run')),
+    page.locator('#prompt').press('Control+Enter')
+  ]);
+  await focusOn(page, 'stopButton');
   await page.locator('#messages .message.provider[data-provider="codex"]').waitFor();
   const hanging = await until(
     async () => (await h.calls()).find((call) => call.provider === 'claude'),
@@ -308,11 +359,14 @@ test('停止讨论 ends a hanging call and keeps the answers already given', TIM
   assert.equal(await page.locator('#newRoom').isDisabled(), true);
   await assertReadable(page, 'while a discussion runs');
 
-  await page.getByRole('button', { name: '停止讨论' }).click();
+  await focusOn(page, 'stopButton');
+  await page.keyboard.press('Enter');
   await page
     .locator('#messages .message.system', { hasText: '讨论已停止。已完成的回答保留；未完成的调用已终止。' })
     .waitFor();
   await roundEnded(page);
+  // The stop button is gone: focus is back in the prompt, ready for a follow-up question.
+  await focusOn(page, 'prompt');
   await until(() => !alive(hanging.pid), 'the hanging CLI ends');
   await entry.locator('.room-item-running').waitFor({ state: 'hidden' });
   assert.equal(await entry.locator('.room-action.rename').isEnabled(), true);
@@ -353,6 +407,8 @@ test('重试未完成的部分 runs only what a failed call left out', TIMEOUT, 
     .waitFor();
   await roundEnded(page);
   await page.locator('#resumeBar').waitFor({ state: 'hidden' });
+  // Focus went to the stop button while the turn ran, and then to the prompt.
+  await focusOn(page, 'prompt');
   assert.equal(await page.locator('#messages .message.user').count(), 1);
   assert.equal(await page.locator('#prompt').inputValue(), '下一个问题的草稿');
 
