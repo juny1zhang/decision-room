@@ -84,7 +84,7 @@ Live testing on macOS returned answers from Codex and Claude Code. Cursor login 
 | System | Status |
 | --- | --- |
 | macOS | Supported. `Start-Decision-Room.command` starts it from Finder. |
-| Linux | Supported and tested in CI. The browser opens with `xdg-open`; without a desktop, use `--no-open` and open the printed address yourself. |
+| Linux | Supported and tested in CI. `xdg-open` opens a temporary launcher page that only your user can read, which forwards to the tokenized address, so the token never appears in process arguments other users can see. Snap browsers (such as Ubuntu’s default Firefox) cannot read that page; open the address printed in the terminal instead. Without a desktop, use `--no-open` and open the printed address yourself. |
 | Windows | Not supported. |
 
 On Windows, CLIs installed with npm are `.cmd` shims, which Node.js cannot start without a shell, and Decision Room never starts a CLI through a shell so that nothing in a request can become a command. Stopping a discussion also ends the CLI’s whole process group, which only works on POSIX systems such as macOS and Linux.

@@ -86,7 +86,7 @@ node server.mjs --debug    # 在终端输出调试信息
 | 系统 | 状态 |
 | --- | --- |
 | macOS | 支持。可以双击 `Start-Decision-Room.command` 启动 |
-| Linux | 支持，并在持续集成中测试。用 `xdg-open` 打开浏览器；没有图形界面时使用 `--no-open`，再手动打开终端里的地址 |
+| Linux | 支持，并在持续集成中测试。用 `xdg-open` 打开一个只有本用户可读的临时启动页，再跳转到带凭证的地址，凭证不会出现在其他用户可见的进程参数里。snap 版浏览器（如 Ubuntu 默认的 Firefox）读不到这个启动页，这时直接点击终端里的地址；没有图形界面时使用 `--no-open`，再手动打开终端里的地址 |
 | Windows | 暂不支持 |
 
 Windows 上通过 npm 安装的 CLI 是 `.cmd` 包装脚本，Node.js 不经过 shell 就无法启动它们，而议事间为了避免命令注入，从不经过 shell 启动 CLI。停止讨论时结束整个进程组的做法也只适用于 macOS 和 Linux 这类 POSIX 系统。
