@@ -64,7 +64,7 @@ async function inspectLogin(bin, runProcess, { cwd, env }, signal) {
   const status = await runProcess(bin, ['status', '--format', 'json'], options);
   let account;
   try { account = JSON.parse(status.stdout); } catch {}
-  if (status.code !== 0 || !account?.isAuthenticated || account.hasAccessToken === false) {
+  if (status.code !== 0 || account?.isAuthenticated !== true || account.hasAccessToken !== true) {
     return { authenticated: false, subscription: false, models: [], message: '请在终端运行 agent login 登录 Cursor，再重新检查。' };
   }
 
@@ -89,7 +89,7 @@ export async function inspectCursor({ bin, runProcess, runtimeDir, signal }) {
         runProcess(bin, ['--version'], options), runProcess(bin, ['--help'], options),
       ]);
       info.version = version.stdout.trim().split('\n')[0].slice(0, 100);
-      const flags = ['--mode', '--sandbox', '--workspace', '--model', '--output-format'];
+      const flags = ['--print', '--trust', '--mode', '--sandbox', '--workspace', '--model', '--output-format'];
       if (version.code !== 0 || help.code !== 0 || flags.some(flag => !help.stdout.includes(flag))) {
         return { ...info, message: '当前 Cursor Agent CLI 缺少只读模式或所需参数。请更新后重试。' };
       }

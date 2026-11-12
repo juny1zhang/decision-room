@@ -18,7 +18,7 @@ export async function runMock(provider, wrapperUrl) {
     const help = {
       codex: '--ignore-user-config --model --json --output-last-message -o --sandbox --skip-git-repo-check --ephemeral --search --config --ask-for-approval',
       claude: '--safe-mode --model <model> --no-session-persistence --setting-sources --mcp-config --strict-mcp-config --disable-slash-commands --tools --allowedTools --permission-mode --max-turns --input-format --output-format\n  --effort <level>  Effort level for the current session\n                    (low, medium, high, xhigh, max)\n',
-      cursor: '--mode <mode> (choices: "plan", "ask") --workspace --model --sandbox --list-models --print --output-format --format',
+      cursor: '--mode <mode> (choices: "plan", "ask") --workspace --trust --model --sandbox --list-models --print --output-format --format',
     };
     process.stdout.write(help[provider] + '\n');
     return;

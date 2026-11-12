@@ -44,3 +44,5 @@ node server.mjs --no-open  # 仅在终端打印启动地址
 ```
 
 CLI 安装在特殊位置时，可以通过 `DECISION_ROOM_CODEX_BIN`、`DECISION_ROOM_CLAUDE_BIN` 或 `DECISION_ROOM_CURSOR_BIN` 指定可执行文件的绝对路径。诊断和模型列表能反映当前 CLI 的状态，实际回答仍取决于网络、模型权限和剩余额度。
+
+如果 Cursor 能列出模型，却在回答时一直重连，可以在终端进入一个空目录，运行 `agent --mode ask` 并发送一句简短问题，检查原生 CLI 的回答连接。在议事间里，随时可以停止本轮，在「模型与能力」中取消勾选 Cursor，再用其余参与者继续讨论。
