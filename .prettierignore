@@ -1,0 +1,8 @@
+node_modules/
+data/
+package-lock.json
+docs/images/
+# Real CLI output captured verbatim for contract tests.
+tests/fixtures/cli/
+# Prose is maintained by hand; keep Markdown out of automatic formatting.
+*.md
