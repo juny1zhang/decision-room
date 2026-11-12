@@ -609,12 +609,31 @@ button svg {
 }
 .message-body li {
   padding: 2px 0;
+  /* An item's continuation lines keep their line breaks, as in paragraphs. */
+  white-space: pre-line;
 }
 .message-body li + li {
   margin-top: 4px;
 }
+.message-body li > ul,
+.message-body li > ol {
+  margin: 4px 0 0;
+}
+/* Items of a loose list (separated by blank lines) keep their paragraphs in <p>. */
+.message-body .loose > li + li {
+  margin-top: 15px;
+}
+.message-body li > p {
+  margin-bottom: 8px;
+}
+.message-body li > p:last-child {
+  margin-bottom: 0;
+}
 .message-body strong {
   font-weight: 650;
+}
+.message-body del {
+  color: var(--sub);
 }
 .message-body code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -639,12 +658,26 @@ button svg {
   line-height: 1.8;
   white-space: pre;
 }
+/* The language of a fenced code block, as a small caption that stays put when the code scrolls. */
+.message-body pre[data-lang]::before {
+  content: attr(data-lang);
+  display: block;
+  width: fit-content;
+  position: sticky;
+  left: 0;
+  margin-bottom: 6px;
+  font: 600 10px/1.5 var(--font);
+  letter-spacing: 0.04em;
+  color: #939b8d;
+}
 .message-body blockquote {
   border-left: 3px solid #b7c9ac;
   color: #717e67;
   background: #f7faf3;
   padding: 10px 15px;
   margin: 14px 0;
+  /* Also inside a list item, whose own lines keep their breaks. */
+  white-space: normal;
 }
 .message-body hr {
   border: 0;
@@ -672,6 +705,13 @@ button svg {
 .message-body th {
   background: #f1f5eb;
   font-weight: 600;
+}
+/* Column alignment from the table's separator row: |:---:| centred, |---:| right-aligned. */
+.message-body [data-align='center'] {
+  text-align: center;
+}
+.message-body [data-align='right'] {
+  text-align: right;
 }
 .message-body a {
   text-underline-offset: 3px;
