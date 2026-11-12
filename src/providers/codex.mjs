@@ -2,8 +2,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { CATALOG_TIMEOUT } from '../config.mjs';
-import { diagnosticFailure } from '../diagnostics.mjs';
-import { AppError } from '../errors.mjs';
+import { classifyFailure, errorText, failureError } from '../diagnostics.mjs';
 import { checkCli, EFFORT_ORDER, effortLevels, isModelId } from './common.mjs';
 
 // `codex exec --help` must list these flags, which every turn relies on.
@@ -93,7 +92,9 @@ async function invoke({
   timeout
 }) {
   const outputFile = path.join(workDir, 'answer.txt');
-  let failed = '';
+  let failed = false;
+  // Messages of turn.failed and error events: with stderr, the only output that may explain a failure.
+  const errors = [];
   let completed = false;
   let last = '';
   let reportedModel = '';
@@ -109,16 +110,26 @@ async function invoke({
       } catch {
         return;
       }
+      if (!event || typeof event !== 'object') return;
       if (event.type === 'turn.completed') completed = true;
-      if (event.type === 'turn.failed') failed = event.error?.message || 'Codex 本轮失败。';
+      if (event.type === 'turn.failed') {
+        failed = true;
+        errors.push(errorText(event.error));
+      }
+      if (event.type === 'error') errors.push(errorText(event));
       if (event.type === 'item.completed' && event.item?.type === 'agent_message')
         last = event.item.text || '';
       if (event.type === 'thread.started' && typeof event.model === 'string') reportedModel = event.model;
     }
   });
-  if (result.code !== 0) throw new AppError(diagnosticFailure(result));
-  if (failed) throw new AppError(diagnosticFailure({ code: result.code, stderr: failed, stdout: '' }));
-  if (!completed) throw new AppError('Codex 没有返回完成标记，未将这次输出认定为有效结论。');
+  // stdout carries the model's own messages, so it never decides what kind of failure this was.
+  if (result.code !== 0 || failed)
+    throw failureError(classifyFailure({ code: result.code, stderr: result.stderr, errors }));
+  if (!completed)
+    throw failureError({
+      category: 'other',
+      message: 'Codex 没有返回完成标记，未将这次输出认定为有效结论。'
+    });
   let text = last;
   try {
     text = await fs.readFile(outputFile, 'utf8');

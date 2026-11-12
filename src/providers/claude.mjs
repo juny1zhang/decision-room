@@ -1,7 +1,6 @@
 // Claude Code adapter: claude.ai login and model checks, and one tool-restricted `claude -p` turn per answer.
 import { CATALOG_TIMEOUT } from '../config.mjs';
-import { diagnosticFailure } from '../diagnostics.mjs';
-import { AppError } from '../errors.mjs';
+import { classifyFailure, failureError } from '../diagnostics.mjs';
 import { checkCli, effortLevels, isModelId } from './common.mjs';
 
 // Every call ignores user, project and local settings and hooks, and requires a claude.ai login.
@@ -123,24 +122,25 @@ async function invoke({
 }) {
   const args = printArgs({ instructions, model, reasoning, webSearch });
   const result = await run(bin, args, { input: prompt, cwd: workDir, timeout, signal });
-  if (result.code !== 0) throw new AppError(diagnosticFailure(result));
-  let parsed;
+  let parsed = null;
   try {
     parsed = JSON.parse(result.stdout);
-  } catch {
-    throw new AppError('无法解析 Claude 返回结果。请更新 Claude Code 后重试。');
+  } catch {}
+  if (!parsed || typeof parsed !== 'object') parsed = null;
+  // The result is the model's answer unless the CLI marked it as an error; only then may it explain a failure.
+  const subtype = typeof parsed?.subtype === 'string' ? parsed.subtype : '';
+  const failed = parsed !== null && (parsed.is_error === true || (subtype !== '' && subtype !== 'success'));
+  if (failed && subtype.includes('max_turns'))
+    throw failureError({
+      category: 'other',
+      message: 'Claude 达到本轮工具调用上限。请缩小问题，或关闭联网后重试。'
+    });
+  if (result.code !== 0 || failed) {
+    const errors = failed ? [parsed.result, parsed.error, ...[parsed.errors].flat()] : [];
+    throw failureError(classifyFailure({ code: result.code, stderr: result.stderr, errors }));
   }
-  if (parsed.is_error || (parsed.subtype && parsed.subtype !== 'success')) {
-    if (/max_turns/.test(parsed.subtype || ''))
-      throw new AppError('Claude 达到本轮工具调用上限。请缩小问题，或关闭联网后重试。');
-    throw new AppError(
-      diagnosticFailure({
-        code: result.code,
-        stderr: parsed.result || parsed.errors?.join('\n') || '',
-        stdout: ''
-      })
-    );
-  }
+  if (!parsed)
+    throw failureError({ category: 'cli', message: '无法解析 Claude 返回结果。请更新 Claude Code 后重试。' });
   return {
     text: typeof parsed.result === 'string' ? parsed.result : '',
     model: Object.keys(parsed.modelUsage || {}).join(', ') || model || 'Claude 默认模型'

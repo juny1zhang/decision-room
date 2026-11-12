@@ -3,6 +3,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { classifyFailure, errorText, failureError } from '../diagnostics.mjs';
 import { stripAnsi } from '../redact.mjs';
 
 const credentialStores = new Map();
@@ -182,6 +183,34 @@ async function inspect({ bin, run, runtimeDir, signal }) {
   }
 }
 
+// Cursor's own failure messages, checked in order before the shared ones.
+const CURSOR_FAILURES = [
+  ['network', connectionLost, 'Cursor 与模型服务的连接已中断。请检查网络后重试。'],
+  ['auth', authenticationError, 'Cursor 登录已失效。请运行 agent login 后重新检查。'],
+  ['quota', usageLimit, 'Cursor 用量或速率已达上限。请检查账号用量后重试。'],
+  ['model', modelUnavailable, 'Cursor 无法使用所选模型。请重新检查连接，并从模型列表选择。']
+];
+
+/**
+ * Classifies a failed Cursor call as { category, message } (see classifyFailure in diagnostics.mjs) from its
+ * error output only: `stderr` and `errors`, the error text of a result the CLI marked as an error, never the
+ * answer. Cursor's own patterns come first, then the shared ones, then the exit code.
+ */
+export function classifyCursorFailure({ code, stderr = '', errors = [] }) {
+  const text = [stderr, ...errors.map(errorText)].join('\n');
+  for (const [category, pattern, message] of CURSOR_FAILURES)
+    if (pattern.test(text)) return { category, message };
+  const shared = classifyFailure({ code, stderr, errors });
+  if (shared.category !== 'other') return shared;
+  return {
+    category: 'other',
+    message:
+      code === 0
+        ? 'Cursor 未返回有效的回答。'
+        : `Cursor 调用失败（退出码 ${code ?? '未知'}）。请在终端检查 agent status、网络和模型权限。`
+  };
+}
+
 // Cursor has no separate system prompt: the instructions precede the question on stdin. Reasoning effort
 // is part of a Cursor model ID, so ctx.reasoning is not used.
 async function invoke({ bin, run, workDir, signal, prompt, instructions, model, webSearch, timeout }) {
@@ -193,25 +222,19 @@ async function invoke({ bin, run, workDir, signal, prompt, instructions, model, 
     args.push('--output-format', 'json');
     if (model) args.push('--model', model);
     const result = await run(bin, args, { cwd, env, signal, timeout, input: instructions + prompt });
-    if (result.code !== 0) {
-      const failure = result.stderr + '\n' + result.stdout;
-      if (connectionLost.test(failure)) throw new Error('Cursor 与模型服务的连接已中断。请检查网络后重试。');
-      if (authenticationError.test(failure))
-        throw new Error('Cursor 登录已失效。请运行 agent login 后重新检查。');
-      if (usageLimit.test(failure)) throw new Error('Cursor 用量或速率已达上限。请检查账号用量后重试。');
-      if (modelUnavailable.test(failure))
-        throw new Error('Cursor 无法使用所选模型。请重新检查连接，并从模型列表选择。');
-      throw new Error(
-        `Cursor 调用失败（退出码 ${result.code}）。请在终端检查 agent status、网络和模型权限。`
-      );
-    }
-    let event;
+    let event = null;
     try {
       event = JSON.parse(result.stdout);
     } catch {}
-    if (event?.is_error || typeof event?.result !== 'string' || !event.result.trim()) {
-      throw new Error('Cursor 未返回有效的回答。');
+    if (!event || typeof event !== 'object') event = null;
+    // The result is the model's answer unless the CLI marked it as an error; only then may it explain a failure.
+    const failed = event?.is_error === true;
+    if (result.code !== 0 || failed) {
+      const errors = failed ? [event.result, event.error] : [];
+      throw failureError(classifyCursorFailure({ code: result.code, stderr: result.stderr, errors }));
     }
+    if (typeof event?.result !== 'string' || !event.result.trim())
+      throw failureError({ category: 'other', message: 'Cursor 未返回有效的回答。' });
     return { text: event.result.trim(), model: typeof event.model === 'string' ? event.model : model || '' };
   });
 }

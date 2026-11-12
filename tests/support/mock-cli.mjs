@@ -184,6 +184,18 @@ export async function runMock(provider, wrapperUrl) {
     process.exitCode = 1;
     return;
   }
+  if (settings.failure) {
+    // A call that fails after the model wrote `answer` (in the CLI's own output format), with `stderr`.
+    const { answer = '', stderr = '', code = 1 } = settings.failure;
+    const output =
+      provider === 'codex'
+        ? { type: 'item.completed', item: { id: 'agent-1', type: 'agent_message', text: answer } }
+        : { type: 'result', subtype: 'success', is_error: false, result: answer };
+    process.stdout.write(JSON.stringify(output) + '\n');
+    process.stderr.write(stderr + '\n');
+    process.exitCode = code;
+    return;
+  }
   if (settings.empty) return;
   if (settings.delayMs) await new Promise((resolve) => setTimeout(resolve, settings.delayMs));
   if (provider === 'codex') {
