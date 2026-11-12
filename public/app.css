@@ -5,8 +5,10 @@
  * conversation & empty state · messages · composer · floating controls · dialogs
  * (shared, context, configuration, health) · utilities · responsive · reduced motion.
  *
- * Every selector is declared once per block: the base rules hold the desktop look and the
- * media queries at the end only adjust it, from wide (1550px+) down to narrow (390px).
+ * Each component is styled in one place: its base rule, then its states and variants (:hover,
+ * :disabled, .active…). The media queries at the end only adjust that look, from wide screens
+ * (1550px+) down to narrow ones (390px). Where two rules of equal specificity compete, a comment
+ * notes the order that matters.
  */
 
 /* ---------------------------------------------------------------- Design tokens */
@@ -587,10 +589,12 @@ button svg {
 .message-body h2,
 .message-body h3,
 .message-body h4 {
-  font-size: 15px;
   font-weight: 650;
   margin: 20px 0 8px;
   line-height: 1.65;
+}
+.message-body h2 {
+  font-size: 15px;
 }
 .message-body h3 {
   font-size: 14px;
