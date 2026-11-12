@@ -60,8 +60,8 @@ export const canUseMode = () =>
 export const activeCapabilities = () =>
   state.health?.capabilities || [{ id: 'general', label: '通用分析', description: '' }];
 
-// The web-search checkbox is the source of truth for the webSearch flag, so the two functions below
-// read and write it directly.
+// The web-search checkbox is the source of truth for the webSearch flag: configuration() reads it and
+// restoreConfiguration() sets it.
 
 /** Snapshot of the current selection, as sent to /api/run and saved with the draft. */
 export function configuration() {
