@@ -178,6 +178,12 @@ async function inspect(ctx) {
 }
 
 /**
+ * Most model turns one answer may take. Each web search or fetch takes a turn of its own, and at a high
+ * reasoning level a researched answer often needs more than ten; without web tools an answer takes one.
+ */
+export const MAX_TURNS = 30;
+
+/**
  * Arguments for one non-interactive turn that reads its prompt from stdin: no session file, MCP servers,
  * slash commands or browser, and no tools except web search and fetch when `webSearch` is on. With
  * `stream`, the CLI prints its events as they happen (stream-json), partial messages included; otherwise
@@ -190,7 +196,7 @@ export function printArgs({ instructions, model, reasoning, webSearch, stream = 
   else args.push('--output-format', 'json');
   args.push('--no-session-persistence', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}');
   args.push('--disable-slash-commands', '--no-chrome', '--permission-mode', 'dontAsk');
-  args.push('--tools', tools, '--disallowedTools', 'mcp__*', '--max-turns', '8');
+  args.push('--tools', tools, '--disallowedTools', 'mcp__*', '--max-turns', String(MAX_TURNS));
   args.push('--append-system-prompt', instructions);
   if (model) args.push('--model', model);
   if (reasoning) args.push('--effort', reasoning);
@@ -331,7 +337,24 @@ export default {
     'ANTHROPIC_ORGANIZATION_ID',
     // Set when Decision Room itself runs inside Claude Code; the child must not act as a nested session.
     'CLAUDECODE',
-    'CLAUDE_CODE_ENTRYPOINT'
+    'CLAUDE_CODE_ENTRYPOINT',
+    // The rest of a Claude Code session's own variables, present when Decision Room was started from one
+    // (by an agent, for example). They tie a process to that session, and CLAUDE_CODE_MESSAGING_TOKEN
+    // authenticates to it, so no CLI may inherit them.
+    'CLAUDE_CODE_SESSION_ID',
+    'CLAUDE_CODE_CHILD_SESSION',
+    'CLAUDE_CODE_SESSION_ATTENDED',
+    'CLAUDE_CODE_ENVIRONMENT_KIND',
+    'CLAUDE_CODE_EXECPATH',
+    'CLAUDE_CODE_WORKER_EPOCH',
+    'CLAUDE_CODE_MESSAGING_SOCKET',
+    'CLAUDE_CODE_MESSAGING_TOKEN',
+    'CLAUDE_CODE_BRIDGE_MCP_CARRIER',
+    'CLAUDE_CODE_BRIDGE_OWNER_ACCOUNT_UUID',
+    'CLAUDE_CODE_BRIDGE_OWNER_ORG_UUID',
+    'CLAUDE_PID',
+    'CLAUDE_EFFORT',
+    'AI_AGENT'
   ],
   apiKeyEnv: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   supportsWeb: true,

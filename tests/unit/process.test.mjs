@@ -50,6 +50,24 @@ const ORIGINAL_DENYLIST = [
   'CURSOR_AGENT_CLI_LOCAL_MODE'
 ];
 
+// The variables of a Claude Code session Decision Room may have been started from.
+const SESSION_VARIABLES = [
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ATTENDED',
+  'CLAUDE_CODE_ENVIRONMENT_KIND',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_WORKER_EPOCH',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+  'CLAUDE_CODE_BRIDGE_MCP_CARRIER',
+  'CLAUDE_CODE_BRIDGE_OWNER_ACCOUNT_UUID',
+  'CLAUDE_CODE_BRIDGE_OWNER_ORG_UUID',
+  'CLAUDE_PID',
+  'CLAUDE_EFFORT',
+  'AI_AGENT'
+];
+
 async function tempDir(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'decision-room-unit-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
@@ -57,7 +75,7 @@ async function tempDir(t) {
 }
 
 test('every CLI starts without the API keys, endpoints and session markers of all providers', () => {
-  assert.deepEqual([...CHILD_ENV_DENYLIST].sort(), [...ORIGINAL_DENYLIST].sort());
+  assert.deepEqual([...CHILD_ENV_DENYLIST].sort(), [...ORIGINAL_DENYLIST, ...SESSION_VARIABLES].sort());
   const kept = ['PATH', 'HOME', 'LANG', 'OPENAI_ORG_ID', 'CURSOR_CONFIG_DIR', 'CLAUDE_CONFIG_DIR'];
   const source = Object.fromEntries([...ORIGINAL_DENYLIST, ...kept].map((key) => [key, 'value']));
   Object.assign(source, { NO_COLOR: '', FORCE_COLOR: '3' });

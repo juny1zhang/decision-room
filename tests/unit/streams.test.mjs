@@ -9,7 +9,7 @@ import { runDiscussion } from '../../src/discussion.mjs';
 import { answerNote, durationText, usageText } from '../../src/export.mjs';
 import { baseHealth } from '../../src/health.mjs';
 import { createInvoker } from '../../src/invoke.mjs';
-import claude, { readClaudeStream } from '../../src/providers/claude.mjs';
+import claude, { MAX_TURNS, printArgs, readClaudeStream } from '../../src/providers/claude.mjs';
 import { readCodexEvents } from '../../src/providers/codex.mjs';
 import cursor, { readCursorStream } from '../../src/providers/cursor.mjs';
 import {
@@ -609,4 +609,10 @@ test('the page words the note exactly as the export does', async () => {
     null
   ])
     assert.equal(page.usageText(usage), exported.usageText(usage), JSON.stringify(usage));
+});
+
+test('a Claude answer may use up to MAX_TURNS turns, enough for a researched answer', () => {
+  const args = printArgs({ instructions: 'x', model: '', reasoning: 'max', webSearch: true, stream: true });
+  assert.equal(args[args.indexOf('--max-turns') + 1], String(MAX_TURNS));
+  assert.ok(MAX_TURNS >= 30);
 });
