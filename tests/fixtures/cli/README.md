@@ -16,7 +16,7 @@ Captured 2026-11-12 on Linux x64 with Node.js 22, without a login: no account wa
 
 ## What the excerpts keep
 
-- Help: the excerpts keep only the option blocks the app uses; every line is verbatim. Each file keeps the `Usage:` line, then, for every flag the adapters pass (and `--include-partial-messages`, for streaming), its option line and the description lines that follow it, up to the next option or blank line. Nothing is reworded, re-wrapped or reordered. Codex also printed a `WARNING:` line about PATH aliases on stderr, which is not part of the help.
+- Help: the excerpts keep only the option blocks the app uses; every line is verbatim. Each file keeps the `Usage:` line, then, for every flag the adapters pass and a few related ones (`-c` in `codex --help`, Claude's `--include-partial-messages` for streaming), its option line and the description lines that follow it, up to the next option or blank line. Nothing is reworded, re-wrapped or reordered. Codex also printed a `WARNING:` line about PATH aliases on stderr, which is not part of the help.
 - `codex debug models` prints one line of 745 KB. The excerpt keeps all 12 models in the order printed, 9 with `"visibility": "list"` and 3 with `"hide"`, with the fields `slug`, `display_name`, `visibility`, `supported_in_api`, `default_reasoning_level` and the `effort` of each `supported_reasoning_levels` entry. Values are unchanged; the JSON is indented with two spaces.
 - The login status file records the arguments, exit code, stdout and stderr of the command: logged out, Codex 0.167.2 prints `Not logged in` on stderr and exits with 1.
 
