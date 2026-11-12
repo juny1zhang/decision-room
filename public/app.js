@@ -14,8 +14,8 @@
 //   js/rooms.js                sidebar room list, open / new / export room
 //   js/health.js               connection pills, "工具连接" dialog, health polling
 //   js/run.js                  /api/run streaming, progress, stop
-import { token } from './js/api.js';
-import { setupComposer, autosize } from './js/composer.js';
+import { loadPreferences, token } from './js/api.js';
+import { setupComposer, autosize, updateControls } from './js/composer.js';
 import { setupConfigDialog } from './js/config-dialog.js';
 import { setupContextDialog } from './js/context-dialog.js';
 import { $, element } from './js/dom.js';
@@ -42,7 +42,15 @@ async function init() {
     renderHealth();
     return;
   }
-  const selected = storage.get(SELECTED_ROOM_KEY);
+  // The browser's saved draft belongs to this page's address, which a new port changes. The server
+  // keeps the configuration and the selected room for every address: use them when the browser has none.
+  let selected = storage.get(SELECTED_ROOM_KEY);
+  const preferences = await loadPreferences();
+  if (!state.selectionRestored && preferences.configuration) {
+    restoreConfiguration(preferences.configuration);
+    updateControls();
+  }
+  selected ||= preferences.selectedRoomId;
   await Promise.allSettled([
     checkHealth(),
     refreshRooms(),

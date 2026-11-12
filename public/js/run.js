@@ -6,25 +6,30 @@ import { $ } from './dom.js';
 import { checkHealth } from './health.js';
 import { appendMessage } from './messages.js';
 import { clearError, showError } from './notices.js';
-import { loadRoom, refreshRooms, setHeading } from './rooms.js';
-import { SELECTED_ROOM_KEY, storage } from './storage.js';
+import { loadRoom, refreshRooms, rememberRoom, setHeading } from './rooms.js';
 import { canUseMode, configuration, names, stageNames, state } from './state.js';
 
 let elapsedTimer;
+/** Set while a new room waits for its first saved message, which puts it in the sidebar. */
+let newRoomPending = false;
 
 /** Applies one event of the run stream: room | message | status | error | done. */
 function eventReceived(event) {
   if (event.type === 'room') {
+    newRoomPending = state.roomId !== event.roomId;
     state.roomId = event.roomId;
-    storage.set(SELECTED_ROOM_KEY, event.roomId);
+    rememberRoom(event.roomId);
     setHeading(event.title);
     $('prompt').value = '';
     autosize();
-    refreshRooms();
   } else if (event.type === 'message') {
     appendMessage(event.message);
     if (event.message.role !== 'user') state.statuses.delete(event.message.provider || event.message.role);
     updateControls();
+    if (newRoomPending) {
+      newRoomPending = false;
+      refreshRooms();
+    }
   } else if (event.type === 'status') {
     const agent = names[event.agent] || event.agent || '讨论';
     state.statuses.set(
@@ -90,7 +95,9 @@ async function submit(event) {
   startElapsedClock();
   state.streamController = new AbortController();
   updateControls();
-  let complete = false;
+  let streamed = false; // the server started the round and streamed events
+  let complete = false; // the stream ended with "done"
+  let failed = false; // the stream reported an error
   try {
     const response = await api('/api/run', {
       method: 'POST',
@@ -98,8 +105,10 @@ async function submit(event) {
       signal: state.streamController.signal
     });
     if (!response.body) throw new Error('浏览器无法读取实时回答，请使用较新的 Chrome 或 Safari。');
+    streamed = true;
     await readNdjson(response.body, (item) => {
       if (item.type === 'done') complete = true;
+      if (item.type === 'error') failed = true;
       eventReceived(item);
     });
     if (!complete && !state.stopping)
@@ -112,10 +121,13 @@ async function submit(event) {
     state.stopping = false;
     state.streamController = null;
     state.statuses.clear();
+    newRoomPending = false;
     stopElapsedClock();
     updateControls();
-    if (state.roomId) await loadRoom(state.roomId, { silent: true, restoreOptions: false });
-    await refreshRooms();
+    // A complete stream already showed every message; only the sidebar's counts and order changed.
+    // After an early end or an error, show what the server saved.
+    if (streamed && complete && !failed) await refreshRooms();
+    else if (streamed && state.roomId) await loadRoom(state.roomId, { silent: true, restoreOptions: false });
     await checkHealth();
   }
 }

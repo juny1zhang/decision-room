@@ -1,6 +1,6 @@
 // The composer and the controls around it: keeps every button, the mode switch and the captions in
 // sync with the state, grows the prompt with its content and saves the draft to localStorage.
-import { token } from './api.js';
+import { savePreferences, token } from './api.js';
 import { $, element } from './dom.js';
 import { DRAFT_KEY, storage } from './storage.js';
 import { canUseMode, configuration, isSingle, names, providers, ready, state, supportsWeb } from './state.js';
@@ -87,21 +87,20 @@ export function changeMode(mode) {
   persistDraft();
 }
 
-/** Saves prompt, shared context and configuration to localStorage, debounced by 250 ms. */
+/**
+ * Saves prompt, shared context and configuration to localStorage, debounced by 250 ms. The configuration
+ * also goes to the server, which keeps it when the page's address changes.
+ */
 export function persistDraft() {
   clearTimeout(draftTimer);
-  draftTimer = setTimeout(
-    () =>
-      storage.set(
-        DRAFT_KEY,
-        JSON.stringify({
-          prompt: $('prompt').value,
-          context: state.context,
-          configuration: state.selectionRestored || state.health ? configuration() : undefined
-        })
-      ),
-    250
-  );
+  draftTimer = setTimeout(() => {
+    const saved = state.selectionRestored || state.health ? configuration() : undefined;
+    storage.set(
+      DRAFT_KEY,
+      JSON.stringify({ prompt: $('prompt').value, context: state.context, configuration: saved })
+    );
+    if (saved) savePreferences({ configuration: saved });
+  }, 250);
 }
 
 /** Grows the prompt with its content (up to a cap), then refreshes the controls and the draft. */

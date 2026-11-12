@@ -23,7 +23,8 @@ function field(parent, labelText, id, control, extraClass = '') {
 }
 
 function renderProviderFields(id, card) {
-  const info = state.health[id] || {};
+  // A failed status check clears state.health, also while this dialog is open.
+  const info = state.health?.[id] || {};
   const choice = (configDraft.settings[id] ||= { model: '', reasoning: '', capability: 'general' });
   const fields = element('div', 'provider-fields');
   const modelSelect = element('select');
@@ -112,7 +113,7 @@ function renderConfiguration() {
     input.name = 'provider';
     input.id = 'participant-' + id;
     input.checked = selected;
-    const status = ready(id) ? '已登录' : state.health[id]?.available ? '未就绪' : '未连接';
+    const status = ready(id) ? '已登录' : state.health?.[id]?.available ? '未就绪' : '未连接';
     label.append(
       input,
       element('span', 'provider-name', names[id]),

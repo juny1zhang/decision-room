@@ -51,6 +51,17 @@ export function renderHealth() {
     if (agent?.version) box.append(element('div', 'health-version', agent.version));
     details.append(box);
   }
+  const ignored = state.health?.apiEnvironmentNames;
+  if (Array.isArray(ignored) && ignored.length) {
+    const shown = ignored.slice(0, 2).join('、') + (ignored.length > 2 ? ' 等' : '');
+    details.append(
+      element(
+        'p',
+        'health-note',
+        `检测到 API Key 环境变量（${shown}）。本应用只使用官方 CLI 的账号登录，已在子进程中忽略这些变量。`
+      )
+    );
+  }
   $('refreshHealth').disabled = state.checking;
   $('refreshHealth').textContent = state.checking ? '正在检查…' : '重新检查连接';
   updateControls();

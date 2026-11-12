@@ -1,6 +1,6 @@
 // Rooms and the sidebar: the saved-room list, opening, starting and exporting a room, the page
 // heading and the off-canvas sidebar on narrow screens.
-import { api, normalError, token } from './api.js';
+import { api, normalError, savePreferences, token } from './api.js';
 import { autosize, updateControls } from './composer.js';
 import { $, element } from './dom.js';
 import { replaceMessages } from './messages.js';
@@ -11,6 +11,13 @@ import { restoreConfiguration, state } from './state.js';
 export function setHeading(title) {
   $('roomHeading').textContent = title || '新的讨论';
   document.title = `${title ? title + ' · ' : ''}议事间`;
+}
+
+/** Remembers the open room (null: none) in this browser and on the server, for the next visit. */
+export function rememberRoom(id) {
+  if (id) storage.set(SELECTED_ROOM_KEY, id);
+  else storage.remove(SELECTED_ROOM_KEY);
+  savePreferences({ selectedRoomId: id || null });
 }
 
 export function setSidebar(open) {
@@ -72,7 +79,7 @@ export async function loadRoom(id, { silent = false, restoreOptions = true } = {
       state.context = room.context || '';
       restoreConfiguration(room.configuration);
     }
-    storage.set(SELECTED_ROOM_KEY, room.id);
+    rememberRoom(room.id);
     setHeading(room.title);
     replaceMessages(room.messages || []);
     updateControls();
@@ -107,7 +114,7 @@ function newRoom() {
   state.roomId = null;
   state.room = null;
   state.context = '';
-  storage.remove(SELECTED_ROOM_KEY);
+  rememberRoom(null);
   setHeading('');
   replaceMessages([]);
   $('prompt').value = '';

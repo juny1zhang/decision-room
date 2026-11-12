@@ -75,7 +75,8 @@ export function configuration() {
     participants: [...state.participants],
     moderator: state.moderator,
     settings,
-    webSearch: $('webSearch').checked && supportsWeb(state.participants)
+    // Until the first health check answers, keep the saved choice instead of saving "off".
+    webSearch: $('webSearch').checked && (!state.health || supportsWeb(state.participants))
   };
 }
 
