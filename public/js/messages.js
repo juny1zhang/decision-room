@@ -1,5 +1,5 @@
-// The conversation pane: message cards, the per-question "本轮设置" details and keeping the view
-// scrolled to the newest message.
+// The conversation pane: message cards, live previews of answers still being written, the per-question
+// "本轮设置" details and keeping the view scrolled to the newest message.
 import { $, element } from './dom.js';
 import { markdown } from './markdown.js';
 import { toast } from './notices.js';
@@ -11,6 +11,15 @@ const ROLE_NAMES = { user: '你', system: '讨论提示' };
 const ROLE_AVATARS = { summary: '合', system: 'i' };
 /** Version 1 rooms only had Codex moderate, and their summaries name no provider. */
 const LEGACY_MODERATOR = 'codex';
+/** Least time between two Markdown renderings of one preview. */
+const PREVIEW_RENDER_INTERVAL = 200;
+
+/**
+ * Live previews, one per provider and stage being answered: `${agent}:${stage}` → { card, body, text,
+ * timer, renderedAt }. Their cards sit in #livePreviews, after the messages and outside their live region,
+ * so screen readers announce each answer once, when it is final.
+ */
+const previews = new Map();
 
 /** user, summary or system, or provider for an answer, whose role is the provider's id. */
 function kindOf(role) {
@@ -42,6 +51,34 @@ function formatTime(value) {
   return Number.isNaN(date.valueOf())
     ? ''
     : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+}
+
+/** "用时 42 秒", "用时 3 分 12 秒": how long an answer took, or '' when unknown (as in src/export.mjs). */
+export function durationText(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 1) return '用时不到 1 秒';
+  if (seconds < 60) return `用时 ${seconds} 秒`;
+  const rest = seconds % 60;
+  return `用时 ${Math.floor(seconds / 60)} 分${rest ? ` ${rest} 秒` : '钟'}`;
+}
+
+const tokenCount = (value) =>
+  Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString('en-US') : '';
+
+/**
+ * "输入 12,345（缓存 8,000）/ 输出 1,234 tokens": the tokens an answer used, with only the counts its CLI
+ * reported, or '' when it reported none (as in src/export.mjs).
+ */
+export function usageText(usage) {
+  if (!usage || typeof usage !== 'object') return '';
+  const input = tokenCount(usage.inputTokens);
+  const output = tokenCount(usage.outputTokens);
+  const cached = input && usage.cachedInputTokens > 0 ? tokenCount(usage.cachedInputTokens) : '';
+  const parts = [input && `输入 ${input}${cached && `（缓存 ${cached}）`}`, output && `输出 ${output}`];
+  // A full-width parenthesis brings its own space.
+  const text = parts.filter(Boolean).join(cached ? '/ ' : ' / ');
+  return text && `${text} tokens`;
 }
 
 async function copyText(text) {
@@ -85,17 +122,12 @@ function turnSettings(config) {
   return details;
 }
 
-/** Renders one message unless a message with the same id is already shown. */
-export function appendMessage(message, scroll = true) {
-  const id = message.id || `${message.role}:${message.stage}:${message.text}`;
-  if (state.seen.has(id)) return;
-  state.seen.add(id);
-  state.messages.push(message);
-  const autoScroll = nearBottom();
-  $('emptyState').hidden = true;
-  const kind = kindOf(message.role);
+/**
+ * A card for a message of `kind` (see kindOf) with its head: avatar, speaker and stage. An answer takes
+ * its provider's colours and avatar glyph from app.css through data-provider.
+ */
+function messageCard(message, kind) {
   const card = element('article', `message ${kind}`);
-  // An answer takes its provider's colours and avatar glyph from app.css through data-provider.
   if (kind === 'provider') card.dataset.provider = message.role;
   const head = element('div', 'message-head');
   if (kind !== 'user') {
@@ -115,6 +147,99 @@ export function appendMessage(message, scroll = true) {
   head.append(speaker);
   if (kind !== 'user' && message.stage)
     head.append(element('span', 'stage-label', stageNames[message.stage] || message.stage));
+  card.append(head);
+  return { card, head };
+}
+
+/** Keeps the newest content in view if the reader was at the bottom (`stick`), else offers the jump. */
+function followNewContent(stick) {
+  if (stick) requestAnimationFrame(toBottom);
+  else $('jumpBottom').hidden = nearBottom();
+}
+
+function removePreview(key) {
+  const preview = previews.get(key);
+  if (!preview) return;
+  clearTimeout(preview.timer);
+  preview.card.remove();
+  previews.delete(key);
+}
+
+function renderPreview(preview) {
+  clearTimeout(preview.timer);
+  preview.timer = null;
+  preview.renderedAt = Date.now();
+  const stick = nearBottom();
+  preview.body.replaceChildren(markdown(preview.text));
+  followNewContent(stick);
+}
+
+/**
+ * Shows what a provider has written so far for one stage, from a run's { type: 'delta', agent, stage,
+ * append, reset? } event: a card like the answer's, marked "生成中…", whose Markdown is rendered at most
+ * every PREVIEW_RENDER_INTERVAL ms. reset starts the text over. The final message replaces the preview
+ * (appendMessage); dropPreviews() and clearPreviews() remove previews of failed or ended calls.
+ */
+export function showPreview({ agent, stage, append, reset }) {
+  if (!isProviderId(agent) || typeof stage !== 'string' || typeof append !== 'string') return;
+  const key = `${agent}:${stage}`;
+  let preview = previews.get(key);
+  if (!preview) {
+    const kind = stage === 'summary' ? 'summary' : 'provider';
+    const { card, head } = messageCard(
+      { role: kind === 'summary' ? 'summary' : agent, provider: agent, stage },
+      kind
+    );
+    card.classList.add('preview');
+    card.dataset.preview = key;
+    card.setAttribute('aria-busy', 'true');
+    head.append(element('span', 'preview-label', '生成中…'));
+    const body = element('div', 'message-body');
+    const answer = element('div', 'answer-card');
+    answer.append(body);
+    card.append(answer);
+    preview = { card, body, text: '', timer: null, renderedAt: 0 };
+    previews.set(key, preview);
+    let list = $('livePreviews');
+    if (!list) {
+      list = element('div', 'live-previews');
+      list.id = 'livePreviews';
+      $('messages').after(list);
+    }
+    const stick = nearBottom();
+    $('emptyState').hidden = true;
+    list.append(card);
+    followNewContent(stick);
+  }
+  preview.text = (reset ? '' : preview.text) + append;
+  if (preview.timer) return;
+  const wait = preview.renderedAt + PREVIEW_RENDER_INTERVAL - Date.now();
+  if (wait > 0) preview.timer = setTimeout(() => renderPreview(preview), wait);
+  else renderPreview(preview);
+}
+
+/** Removes the previews of `agent`, whose call failed. */
+export function dropPreviews(agent) {
+  for (const key of [...previews.keys()]) if (key.startsWith(`${agent}:`)) removePreview(key);
+}
+
+/** Removes every preview: the run ended, or another room is shown. */
+export function clearPreviews() {
+  for (const key of [...previews.keys()]) removePreview(key);
+}
+
+/** Renders one message unless a message with the same id is already shown. */
+export function appendMessage(message, scroll = true) {
+  const id = message.id || `${message.role}:${message.stage}:${message.text}`;
+  if (state.seen.has(id)) return;
+  state.seen.add(id);
+  state.messages.push(message);
+  const autoScroll = nearBottom();
+  // The final answer takes the place of its preview.
+  if (typeof message.provider === 'string') removePreview(`${message.provider}:${message.stage}`);
+  $('emptyState').hidden = true;
+  const kind = kindOf(message.role);
+  const { card, head } = messageCard(message, kind);
   head.append(element('time', 'message-time', formatTime(message.createdAt)));
   if (kind !== 'user') {
     const copy = element('button', 'copy-button', '复制');
@@ -123,7 +248,6 @@ export function appendMessage(message, scroll = true) {
     copy.addEventListener('click', () => copyText(message.text || ''));
     head.append(copy);
   }
-  card.append(head);
   const body = element('div', 'message-body');
   if (kind === 'user') body.textContent = message.text || '';
   else body.append(markdown(message.text || ''));
@@ -136,16 +260,18 @@ export function appendMessage(message, scroll = true) {
     card.append(answer);
   }
   // Older summaries stored the moderator's provider id in the model field.
-  const model = kind === 'provider' || (kind === 'summary' && message.provider) ? message.model : '';
-  if (typeof model === 'string' && model) card.append(element('div', 'message-note', model));
+  if (kind === 'provider' || (kind === 'summary' && message.provider)) {
+    const model = typeof message.model === 'string' ? message.model : '';
+    const note = [model, durationText(message.durationMs), usageText(message.usage)].filter(Boolean);
+    if (note.length) card.append(element('div', 'message-note', note.join(' · ')));
+  }
   $('messages').append(card);
-  if (scroll && autoScroll) requestAnimationFrame(toBottom);
-  else if (scroll) $('jumpBottom').hidden = nearBottom();
+  if (scroll) followNewContent(autoScroll);
 }
 
 /** Shows the registry's labels in messages rendered before the first health response named them. */
 export function refreshProviderNames() {
-  const list = $('messages');
+  const list = $('conversation'); // the messages and the live previews after them
   for (const node of list.querySelectorAll('[data-name-of]'))
     node.textContent = providerName(node.dataset.nameOf);
   for (const card of list.querySelectorAll('.message[data-provider]')) {
@@ -157,6 +283,7 @@ export function refreshProviderNames() {
 export function replaceMessages(messages) {
   state.messages = [];
   state.seen.clear();
+  clearPreviews();
   $('messages').replaceChildren();
   $('emptyState').hidden = messages.length > 0;
   for (const message of messages) appendMessage(message, false);

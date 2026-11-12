@@ -1,10 +1,10 @@
 // Running a discussion: POST /api/run, read its newline-delimited JSON event stream into the
-// conversation, show progress and elapsed time, and stop a run through /api/cancel.
+// conversation, show live previews, progress and elapsed time, and stop a run through /api/cancel.
 import { api, normalError } from './api.js';
 import { autosize, updateControls } from './composer.js';
 import { $ } from './dom.js';
 import { checkHealth } from './health.js';
-import { appendMessage } from './messages.js';
+import { appendMessage, clearPreviews, dropPreviews, showPreview } from './messages.js';
 import { clearError, showError } from './notices.js';
 import { loadRoom, refreshRooms, rememberRoom, setHeading } from './rooms.js';
 import { canUseMode, configuration, providerName, stageNames, state } from './state.js';
@@ -13,8 +13,16 @@ let elapsedTimer;
 /** Set while a new room waits for its first saved message, which puts it in the sidebar. */
 let newRoomPending = false;
 
-/** Applies one event of the run stream: room | message | status | error | done. */
+/**
+ * Applies one event of the run stream: room | message | delta | status | error | done (see
+ * src/discussion.mjs). A delta adds to the live preview of an answer, which its message replaces; the
+ * previews of a participant that failed (status stage 'error') go, and any left go when the run ends.
+ */
 function eventReceived(event) {
+  if (event.type === 'delta') {
+    showPreview(event);
+    return;
+  }
   if (event.type === 'room') {
     newRoomPending = state.roomId !== event.roomId;
     state.roomId = event.roomId;
@@ -31,6 +39,7 @@ function eventReceived(event) {
       refreshRooms();
     }
   } else if (event.type === 'status') {
+    if (event.agent && event.stage === 'error') dropPreviews(event.agent);
     const agent = event.agent ? providerName(event.agent) : '讨论';
     state.statuses.set(
       event.agent || 'system',
@@ -40,6 +49,7 @@ function eventReceived(event) {
   } else if (event.type === 'error') {
     showError(event.message || '本次讨论未完成。');
   } else if (event.type === 'done') {
+    clearPreviews();
     state.roomId = event.roomId || state.roomId;
   }
 }
@@ -121,6 +131,7 @@ async function submit(event) {
     state.stopping = false;
     state.streamController = null;
     state.statuses.clear();
+    clearPreviews();
     newRoomPending = false;
     stopElapsedClock();
     updateControls();

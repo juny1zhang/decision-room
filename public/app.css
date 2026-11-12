@@ -770,6 +770,27 @@ button svg {
   color: #6e7766;
   margin-top: 8px;
 }
+/* A live preview of an answer still being written, until its message replaces it. */
+.preview .answer-card {
+  border-style: dashed;
+}
+/* 4.6:1 like .message-time; the dot is a mark (3:1). */
+.preview-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 11px;
+  color: #686e63;
+}
+.preview-label::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--provider-ink, #5d6e46);
+  animation: pulse 1.4s ease-in-out infinite;
+}
 
 /* Collapsible "本轮设置" summary under each question. */
 .turn-settings {
