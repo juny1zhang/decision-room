@@ -115,7 +115,9 @@ export async function main(argv = process.argv) {
     return;
   }
   if (Number(process.versions.node.split('.')[0]) < MINIMUM_NODE)
-    throw new AppError(`需要 Node.js ${MINIMUM_NODE} 或更新版本。`);
+    throw new AppError(
+      `需要 Node.js ${MINIMUM_NODE} 或更新版本，当前是 ${process.version}。请升级 Node.js 后再启动。`
+    );
   const debug = debugEnabled(argv) ? (line) => process.stderr.write(`[debug] ${line}\n`) : undefined;
   const checkOnly = argv.includes('--check');
   const requestedPort = checkOnly ? null : configuredPort();

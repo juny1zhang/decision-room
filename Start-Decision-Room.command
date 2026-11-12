@@ -15,7 +15,7 @@ cd -- "$decision_room_dir" || exit 1
 
 /bin/zsh -lic '
   if ! command -v node >/dev/null 2>&1; then
-    print -u2 -- "找不到 Node.js。请安装 Node.js 18 或更新版本，或在已启用 Node/nvm 的终端运行 node server.mjs。"
+    print -u2 -- "找不到 Node.js。请安装 Node.js 22 或更新版本，或在已启用 Node/nvm 的终端运行 node server.mjs。"
     exit 127
   fi
   exec node "$1"

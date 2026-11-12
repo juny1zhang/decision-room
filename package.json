@@ -12,8 +12,20 @@
     "url": "https://github.com/juny1zhang/decision-room/issues"
   },
   "type": "module",
+  "bin": {
+    "decision-room": "server.mjs"
+  },
+  "files": [
+    "server.mjs",
+    "src/",
+    "public/",
+    "README*",
+    "LICENSE",
+    "CHANGELOG.md",
+    "Start-Decision-Room.command"
+  ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node server.mjs",
