@@ -7,7 +7,7 @@ import { checkHealth } from './health.js';
 import { appendMessage } from './messages.js';
 import { clearError, showError } from './notices.js';
 import { loadRoom, refreshRooms, rememberRoom, setHeading } from './rooms.js';
-import { canUseMode, configuration, names, stageNames, state } from './state.js';
+import { canUseMode, configuration, providerName, stageNames, state } from './state.js';
 
 let elapsedTimer;
 /** Set while a new room waits for its first saved message, which puts it in the sidebar. */
@@ -31,7 +31,7 @@ function eventReceived(event) {
       refreshRooms();
     }
   } else if (event.type === 'status') {
-    const agent = names[event.agent] || event.agent || '讨论';
+    const agent = event.agent ? providerName(event.agent) : '讨论';
     state.statuses.set(
       event.agent || 'system',
       event.text ? `${agent} ${event.text}` : `${agent} 正在${stageNames[event.stage] || '分析'}…`

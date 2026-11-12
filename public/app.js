@@ -4,15 +4,17 @@
 // Module map. Each module imports only modules listed above it, so there are no import cycles:
 //   js/dom.js, js/storage.js   DOM helpers; Web Storage keys and safe access
 //   js/api.js                  access token and fetch wrapper for the local server
-//   js/state.js                shared state, provider/stage names, selection snapshots
+//   js/providers.js            provider list from /api/health, connection status wording (no DOM)
+//   js/state.js                shared state, provider registry and stage names, selection snapshots
 //   js/notices.js              error banner and toast
-//   js/markdown.js             Markdown → DOM renderer (no innerHTML)
+//   js/markdown-parse.js       Markdown → tree parser (no DOM)
+//   js/markdown.js             tree → DOM renderer (no innerHTML)
 //   js/messages.js             message cards and conversation scrolling
 //   js/composer.js             composer controls, mode switch, draft persistence
 //   js/context-dialog.js       "共同背景" dialog
 //   js/config-dialog.js        "模型与能力" dialog
 //   js/rooms.js                sidebar room list, open / new / export room
-//   js/health.js               connection pills, "工具连接" dialog, health polling
+//   js/health.js               connection pills, "工具连接" dialog, health polling, provider registry
 //   js/run.js                  /api/run streaming, progress, stop
 import { loadPreferences, token } from './js/api.js';
 import { setupComposer, autosize, updateControls } from './js/composer.js';

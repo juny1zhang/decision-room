@@ -1,10 +1,15 @@
 // "模型与能力" dialog: choose participants and, per provider, model, reasoning effort and capability.
-// Edits go to a draft copy that is applied to the shared state only on submit.
+// One card per provider of the server's registry. Edits go to a draft copy that is applied to the shared
+// state only on submit.
 import { persistDraft, updateControls } from './composer.js';
 import { $, closeOnBackdropClick, element } from './dom.js';
-import { activeCapabilities, isSingle, names, providers, ready, state } from './state.js';
+import { activeCapabilities, isSingle, providerName, providers, ready, state } from './state.js';
 
 let configDraft;
+
+const COUNTS = ['零', '一', '两', '三', '四', '五', '六', '七', '八', '九', '十'];
+/** "两", "三"… as in "两到三位"; digits past ten. */
+const count = (number) => COUNTS[number] ?? String(number);
 
 function addOption(select, value, label) {
   const option = element('option', '', label);
@@ -40,7 +45,7 @@ function renderProviderFields(id, card) {
   custom.maxLength = 240;
   custom.spellcheck = false;
   custom.autocomplete = 'off';
-  custom.setAttribute('aria-label', names[id] + ' 自定义模型 ID');
+  custom.setAttribute('aria-label', providerName(id) + ' 自定义模型 ID');
   custom.placeholder = '输入此 CLI 支持的模型 ID';
   custom.value = isCustom ? choice.model : '';
   custom.hidden = !isCustom;
@@ -103,10 +108,11 @@ function renderConfiguration() {
   cards.replaceChildren();
   $('participantHint').textContent = single
     ? '选择一位参与者，并设置本轮回答使用的模型和能力。'
-    : '选择两到三位参与者，可分别设置模型和能力。';
+    : `选择${providers.length > 2 ? '两到' + count(providers.length) : '两'}位参与者，可分别设置模型和能力。`;
   for (const id of providers) {
     const selected = configDraft.participants.includes(id);
     const card = element('section', 'provider-card' + (selected ? ' selected' : ''));
+    card.dataset.provider = id;
     const label = element('label', 'provider-row');
     const input = element('input');
     input.type = single ? 'radio' : 'checkbox';
@@ -116,7 +122,7 @@ function renderConfiguration() {
     const status = ready(id) ? '已登录' : state.health?.[id]?.available ? '未就绪' : '未连接';
     label.append(
       input,
-      element('span', 'provider-name', names[id]),
+      element('span', 'provider-name', providerName(id)),
       element('span', 'provider-state' + (ready(id) ? ' ready' : ''), status)
     );
     input.addEventListener('change', () => {
@@ -138,7 +144,7 @@ function renderConfiguration() {
   const members = configDraft.participants;
   const moderator = $('moderator');
   moderator.replaceChildren();
-  for (const id of members) addOption(moderator, id, names[id]);
+  for (const id of members) addOption(moderator, id, providerName(id));
   moderator.value = configDraft.moderator;
   $('moderatorField').hidden = state.mode !== 'debate';
   const valid = members.length >= (single ? 1 : 2);

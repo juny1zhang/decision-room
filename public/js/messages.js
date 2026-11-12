@@ -3,9 +3,27 @@
 import { $, element } from './dom.js';
 import { markdown } from './markdown.js';
 import { toast } from './notices.js';
-import { activeCapabilities, names, providers, stageNames, state } from './state.js';
+import { initialOf, isProviderId } from './providers.js';
+import { activeCapabilities, providerName, stageNames, state } from './state.js';
 
-const avatars = { codex: '⌘', claude: '✳', cursor: '↗', summary: '合', system: 'i' };
+const ROLE_NAMES = { user: '你', system: '讨论提示' };
+/** Avatars of the roles that are not providers. A provider's avatar comes from app.css or its label. */
+const ROLE_AVATARS = { summary: '合', system: 'i' };
+/** Version 1 rooms only had Codex moderate, and their summaries name no provider. */
+const LEGACY_MODERATOR = 'codex';
+
+/** user, summary or system, or provider for an answer, whose role is the provider's id. */
+function kindOf(role) {
+  if (role === 'user' || role === 'summary' || role === 'system') return role;
+  return isProviderId(role) ? 'provider' : 'system';
+}
+
+/** A provider's name in a message; refreshProviderNames() updates it once the registry is known. */
+function nameOf(id) {
+  const node = element('span', '', providerName(id));
+  node.dataset.nameOf = id;
+  return node;
+}
 
 export function nearBottom() {
   const pane = $('conversation');
@@ -41,10 +59,11 @@ function turnSettings(config) {
   details.append(element('summary', '', '本轮设置'));
   details.addEventListener('toggle', () => {
     if (!details.open || details.children.length > 1) return;
-    const team = config.participants.filter((id) => providers.includes(id));
+    const team = config.participants.filter(isProviderId);
+    const moderator = isProviderId(config.moderator) ? providerName(config.moderator) : '主持人';
     const flow =
       config.mode === 'debate'
-        ? '联合讨论 · ' + names[config.moderator] + ' 归纳'
+        ? '联合讨论 · ' + moderator + ' 归纳'
         : config.mode === 'both'
           ? '分别回答'
           : '单独提问';
@@ -53,7 +72,11 @@ function turnSettings(config) {
     for (const id of team) {
       const choice = config.settings?.[id] || {};
       const capability = activeCapabilities().find((item) => item.id === choice.capability);
-      const labels = [names[id], choice.model || 'CLI 默认模型', capability?.label || choice.capability];
+      const labels = [
+        providerName(id),
+        choice.model || 'CLI 默认模型',
+        capability?.label || choice.capability
+      ];
       if (choice.reasoning) labels.push('推理强度 ' + choice.reasoning);
       list.append(element('li', '', labels.filter(Boolean).join(' · ')));
     }
@@ -70,21 +93,30 @@ export function appendMessage(message, scroll = true) {
   state.messages.push(message);
   const autoScroll = nearBottom();
   $('emptyState').hidden = true;
-  const role = Object.hasOwn(names, message.role) ? message.role : 'system';
-  const card = element('article', `message ${role}`);
+  const kind = kindOf(message.role);
+  const card = element('article', `message ${kind}`);
+  // An answer takes its provider's colours and avatar glyph from app.css through data-provider.
+  if (kind === 'provider') card.dataset.provider = message.role;
   const head = element('div', 'message-head');
-  if (role !== 'user') head.append(element('span', 'avatar', avatars[role]));
-  head.append(
-    element(
-      'span',
-      'speaker',
-      role === 'summary' ? (names[message.provider] || 'Codex') + ' · 主持人总结' : names[role]
-    )
-  );
-  if (role !== 'user' && message.stage)
+  if (kind !== 'user') {
+    const avatar = element('span', 'avatar');
+    avatar.setAttribute('aria-hidden', 'true');
+    avatar.dataset.initial = ROLE_AVATARS[kind] ?? initialOf(providerName(message.role));
+    head.append(avatar);
+  }
+  const speaker = element('span', 'speaker');
+  if (kind === 'summary')
+    speaker.append(
+      nameOf(isProviderId(message.provider) ? message.provider : LEGACY_MODERATOR),
+      ' · 主持人总结'
+    );
+  else if (kind === 'provider') speaker.append(nameOf(message.role));
+  else speaker.textContent = ROLE_NAMES[kind];
+  head.append(speaker);
+  if (kind !== 'user' && message.stage)
     head.append(element('span', 'stage-label', stageNames[message.stage] || message.stage));
   head.append(element('time', 'message-time', formatTime(message.createdAt)));
-  if (role !== 'user') {
+  if (kind !== 'user') {
     const copy = element('button', 'copy-button', '复制');
     copy.type = 'button';
     copy.setAttribute('aria-label', '复制这条回答');
@@ -93,9 +125,9 @@ export function appendMessage(message, scroll = true) {
   }
   card.append(head);
   const body = element('div', 'message-body');
-  if (role === 'user') body.textContent = message.text || '';
+  if (kind === 'user') body.textContent = message.text || '';
   else body.append(markdown(message.text || ''));
-  if (role === 'user') {
+  if (kind === 'user') {
     card.append(body);
     if (Array.isArray(message.configuration?.participants)) card.append(turnSettings(message.configuration));
   } else {
@@ -103,13 +135,23 @@ export function appendMessage(message, scroll = true) {
     answer.append(body);
     card.append(answer);
   }
-  if (providers.includes(role) || role === 'summary') {
-    if (message.model && !(role === 'summary' && !message.provider && message.model === 'codex'))
-      card.append(element('div', 'message-note', message.model));
-  }
+  // Older summaries stored the moderator's provider id in the model field.
+  const model = kind === 'provider' || (kind === 'summary' && message.provider) ? message.model : '';
+  if (typeof model === 'string' && model) card.append(element('div', 'message-note', model));
   $('messages').append(card);
   if (scroll && autoScroll) requestAnimationFrame(toBottom);
   else if (scroll) $('jumpBottom').hidden = nearBottom();
+}
+
+/** Shows the registry's labels in messages rendered before the first health response named them. */
+export function refreshProviderNames() {
+  const list = $('messages');
+  for (const node of list.querySelectorAll('[data-name-of]'))
+    node.textContent = providerName(node.dataset.nameOf);
+  for (const card of list.querySelectorAll('.message[data-provider]')) {
+    const avatar = card.querySelector('.avatar');
+    if (avatar) avatar.dataset.initial = initialOf(providerName(card.dataset.provider));
+  }
 }
 
 export function replaceMessages(messages) {

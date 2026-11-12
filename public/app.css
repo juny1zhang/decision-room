@@ -13,15 +13,22 @@
 
 /* ---------------------------------------------------------------- Design tokens */
 
+/*
+ * Text colours meet WCAG AA against the background they sit on: 4.5:1, or 3:1 for icons, status dots and
+ * other marks. Check a new pair before using it; the comments name the darkest background a colour meets.
+ * No visible text is smaller than 11px at any width.
+ */
 :root {
   --ink: #242d2b;
-  --sub: #737b76;
+  /* 4.6:1 on --wash and on table headers */
+  --sub: #68706b;
   --line: #e3e7df;
   --paper: #fffefa;
   --wash: #f5f6f1;
   --green: #27695b;
   --green-soft: #e7f0e9;
-  --clay: #a5654f;
+  /* 4.6:1 on --clay-soft */
+  --clay: #985944;
   --clay-soft: #f6eae4;
   --blue: #405780;
   --blue-soft: #e8edf8;
@@ -30,6 +37,33 @@
   --font:
     Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
+}
+
+/*
+ * Provider colours. Whatever stands for one provider carries data-provider="<id>": connection pills,
+ * participant badges, provider cards and answers. Its parts read --provider-ink (text and marks, 4.5:1 on
+ * --provider-soft) and --provider-soft (background); --avatar is the glyph of the provider's answers. A
+ * provider without a rule here gets the neutral colours, and its avatar shows the first character of its
+ * label (data-initial), so a provider added to the server's registry needs no change in the page.
+ */
+[data-provider] {
+  --provider-ink: #58615b;
+  --provider-soft: #edf0ea;
+}
+[data-provider='codex'] {
+  --provider-ink: var(--green);
+  --provider-soft: var(--green-soft);
+  --avatar: '⌘';
+}
+[data-provider='claude'] {
+  --provider-ink: var(--clay);
+  --provider-soft: var(--clay-soft);
+  --avatar: '✳';
+}
+[data-provider='cursor'] {
+  --provider-ink: var(--blue);
+  --provider-soft: var(--blue-soft);
+  --avatar: '↗';
 }
 
 /* ---------------------------------------------------------------- Base elements */
@@ -131,7 +165,7 @@ button svg {
   letter-spacing: 3px;
 }
 .brand-sub {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--sub);
   letter-spacing: 1.4px;
 }
@@ -152,9 +186,9 @@ button svg {
   background: #edf2eb;
 }
 .sidebar-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 1.3px;
-  color: #90988f;
+  color: #6a7169;
   margin: 2px 9px 9px;
 }
 .history {
@@ -191,18 +225,19 @@ button svg {
 }
 .room-item-date {
   display: block;
-  color: #8b9288;
-  font-size: 10px;
+  /* 4.6:1 on the active room's background */
+  color: #646a61;
+  font-size: 11px;
   margin-top: 3px;
 }
 .history-empty {
-  color: #939a90;
+  color: #6a7067;
   font-size: 12px;
   padding: 10px;
 }
 .sidebar-bottom {
   font-size: 11px;
-  color: #8a9288;
+  color: #6a7168;
   display: flex;
   gap: 7px;
   align-items: center;
@@ -250,6 +285,14 @@ button svg {
   align-items: center;
   gap: 10px;
 }
+/* One pill per provider (js/health.js). Many providers wrap onto a second row instead of overflowing. */
+.connection-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  /* The gap of .top-actions, which the breakpoints below adjust. */
+  gap: inherit;
+}
 .connection-pill {
   border: 1px solid var(--line);
   border-radius: 24px;
@@ -259,26 +302,48 @@ button svg {
   display: flex;
   gap: 7px;
   align-items: center;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.2px;
   white-space: nowrap;
 }
+/*
+ * The dot's shape tells the status without colour: filled when ready, a ring when the tool needs attention,
+ * a crossed-out circle when it is missing or the server did not answer, half filled (and pulsing) while
+ * checking. Its colours are 3:1 on the top bar.
+ */
 .connection-dot {
-  width: 6px;
-  height: 6px;
+  position: relative;
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border: 1.5px solid currentColor;
   border-radius: 50%;
-  background: #c5cbc0;
+  color: #8b9187;
 }
 .connection-pill.ready .connection-dot {
-  background: #52947f;
+  color: #52947f;
+  background: currentColor;
 }
 .connection-pill.warning .connection-dot {
-  background: #c99a5e;
+  color: #b4864a;
+  border-width: 2.5px;
 }
 .connection-pill.offline .connection-dot {
-  background: #bd7868;
+  color: #bd7868;
+}
+.connection-pill.offline .connection-dot::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: -1.5px;
+  right: -1.5px;
+  height: 1.5px;
+  margin-top: -0.75px;
+  background: currentColor;
+  transform: rotate(-45deg);
 }
 .connection-pill.checking .connection-dot {
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
   animation: pulse 1.4s ease-in-out infinite;
 }
 .icon-button {
@@ -366,6 +431,8 @@ button svg {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.2px;
+  background: var(--provider-soft);
+  color: var(--provider-ink);
 }
 .participant::before {
   content: '';
@@ -373,18 +440,6 @@ button svg {
   height: 6px;
   border-radius: 50%;
   background: currentColor;
-}
-.participant.codex {
-  background: var(--green-soft);
-  color: var(--green);
-}
-.participant.claude {
-  background: var(--clay-soft);
-  color: var(--clay);
-}
-.participant.cursor {
-  background: var(--blue-soft);
-  color: var(--blue);
 }
 .empty-title {
   font-size: clamp(24px, 2.5vw, 33px);
@@ -440,9 +495,10 @@ button svg {
   color: #657360;
   line-height: 1.85;
 }
+/* Decorative (aria-hidden): 3:1 like other marks. */
 .suggestion-arrow {
   align-self: flex-end;
-  color: #93a18b;
+  color: #85937e;
   margin-top: auto;
   font-size: 15px;
 }
@@ -483,46 +539,43 @@ button svg {
   flex: none;
   font-size: 11px;
   font-weight: 650;
-  background: var(--green-soft);
-  color: var(--green);
+  background: var(--provider-soft);
+  color: var(--provider-ink);
 }
-.claude .avatar {
-  background: var(--clay-soft);
-  color: var(--clay);
-}
-.cursor .avatar {
-  background: var(--blue-soft);
-  color: var(--blue);
+/* A provider's glyph from its data-provider rule, else the initial the page puts in data-initial. */
+.avatar::before {
+  content: var(--avatar, attr(data-initial));
 }
 .summary .avatar {
   background: #e9ecdf;
-  color: #61724a;
+  color: #5d6e46;
 }
 .system .avatar {
   background: #fff0dc;
-  color: #96704e;
+  color: #8a6443;
 }
 .speaker {
   font-size: 12px;
   font-weight: 650;
 }
 .stage-label {
-  font-size: 10px;
-  color: #939b8d;
+  font-size: 11px;
+  color: #6f776a;
   border: 1px solid #e5e9df;
   border-radius: 5px;
   padding: 1px 6px;
 }
+/* 4.6:1 also inside a question's bubble */
 .message-time {
-  color: #a0a79b;
-  font-size: 10px;
+  color: #686e63;
+  font-size: 11px;
   margin-left: auto;
 }
 .copy-button {
   padding: 3px;
   border: 0;
   background: transparent;
-  color: #9ba493;
+  color: #6e7767;
   opacity: 0;
   transition: opacity 0.15s;
 }
@@ -545,8 +598,8 @@ button svg {
   border-color: #eadac5;
 }
 .message-note {
-  font-size: 10px;
-  color: #9ba492;
+  font-size: 11px;
+  color: #6e7766;
   margin-top: 8px;
 }
 
@@ -637,7 +690,8 @@ button svg {
 }
 .message-body code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.9em;
+  /* Also in a table or on a narrow screen, where 0.9em would drop below 11px. */
+  font-size: max(11px, 0.9em);
   background: #f1f3ed;
   border-radius: 4px;
   padding: 2px 5px;
@@ -666,13 +720,13 @@ button svg {
   position: sticky;
   left: 0;
   margin-bottom: 6px;
-  font: 600 10px/1.5 var(--font);
+  font: 600 11px/1.5 var(--font);
   letter-spacing: 0.04em;
-  color: #939b8d;
+  color: #687063;
 }
 .message-body blockquote {
   border-left: 3px solid #b7c9ac;
-  color: #717e67;
+  color: #68755e;
   background: #f7faf3;
   padding: 10px 15px;
   margin: 14px 0;
@@ -735,7 +789,7 @@ button svg {
   gap: 9px;
   min-height: 25px;
   font-size: 11px;
-  color: #7c8d73;
+  color: #68785f;
   padding: 1px 7px 10px;
 }
 .progress-spinner {
@@ -782,7 +836,7 @@ button svg {
 .mode-button {
   border: 0;
   background: transparent;
-  color: #8b9480;
+  color: #69725f;
   font-size: 12px;
   padding: 5px 10px;
   border-radius: 6px;
@@ -801,7 +855,7 @@ button svg {
   border: 0;
   background: transparent;
   padding: 5px 2px;
-  color: #859078;
+  color: #6e7861;
   font-size: 12px;
   display: flex;
   gap: 5px;
@@ -811,7 +865,7 @@ button svg {
 .context-dot {
   height: 5px;
   width: 5px;
-  background: #73a082;
+  background: #6c987b;
   border-radius: 50%;
 }
 .prompt {
@@ -828,8 +882,9 @@ button svg {
   background: transparent;
   line-height: 1.8;
 }
+/* The prompt's label is for screen readers only, so its placeholder must be as legible as text. */
 .prompt::placeholder {
-  color: #a3aa9c;
+  color: #707769;
 }
 .composer-bottom {
   display: flex;
@@ -868,7 +923,7 @@ button svg {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #849177;
+  color: #6d7960;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -883,8 +938,8 @@ button svg {
   margin: 0;
 }
 .key-hint {
-  font-size: 9px;
-  color: #b1b7a9;
+  font-size: 11px;
+  color: #72776a;
   white-space: nowrap;
 }
 .send-button {
@@ -914,7 +969,7 @@ button svg {
 .stop-button {
   border: 1px solid #e1cec3;
   background: #fff7f1;
-  color: #a1644a;
+  color: #9e6147;
   border-radius: 9px;
   padding: 0 13px;
   height: 35px;
@@ -931,20 +986,16 @@ button svg {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 9px;
-  color: #a4ab9c;
+  font-size: 11px;
+  color: #6b7865;
   gap: 16px;
 }
 .mode-help {
   max-width: 65%;
-  font-size: 10px;
-  color: #6f7c69;
   overflow-wrap: anywhere;
 }
 .privacy-note {
   text-align: right;
-  font-size: 10px;
-  color: #6f7c69;
 }
 
 /* ---------------------------------------------------------------- Floating controls */
@@ -1009,7 +1060,7 @@ dialog::backdrop {
 }
 .dialog-sub {
   font-size: 12px;
-  color: #8b9482;
+  color: #6e7665;
   line-height: 1.9;
   margin: 0;
 }
@@ -1021,8 +1072,8 @@ dialog::backdrop {
   justify-content: space-between;
   align-items: center;
   margin-top: 14px;
-  font-size: 10px;
-  color: #97a08e;
+  font-size: 11px;
+  color: #6f7766;
   gap: 12px;
 }
 .primary-button {
@@ -1059,7 +1110,7 @@ dialog::backdrop {
   line-height: 1.9;
 }
 .context-textarea::placeholder {
-  color: #a3ad99;
+  color: #6f7865;
 }
 
 /* ---------------------------------------------------------------- Dialogs: models & capabilities */
@@ -1196,12 +1247,12 @@ dialog::backdrop {
   font-weight: 600;
 }
 .health-badge {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
-  color: #a2744b;
+  color: #92653d;
 }
 .health-badge.ok {
-  color: #4b8365;
+  color: #427a5c;
 }
 .health-message {
   font-size: 11px;
@@ -1212,18 +1263,18 @@ dialog::backdrop {
 }
 .health-version {
   font:
-    10px/1.6 ui-monospace,
+    11px/1.6 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
-  color: #9caa8f;
+  color: #67745a;
   margin-top: 5px;
   overflow-wrap: anywhere;
 }
 .health-note {
   font-size: 11px;
   line-height: 1.9;
-  color: #929d86;
+  color: #69735e;
   padding: 4px 0 13px;
 }
 .health-check-button {
@@ -1373,7 +1424,6 @@ dialog::backdrop {
   .connection-pill {
     height: 27px;
     padding: 0 7px;
-    font-size: 10px;
     gap: 5px;
   }
   .export-button {
@@ -1420,7 +1470,6 @@ dialog::backdrop {
   }
   .suggestion-text {
     grid-column: 1;
-    font-size: 10px;
   }
   .suggestion-arrow {
     grid-column: 2;
@@ -1436,12 +1485,6 @@ dialog::backdrop {
   }
   .message-head {
     gap: 7px;
-  }
-  .stage-label {
-    font-size: 9px;
-  }
-  .message-time {
-    font-size: 9px;
   }
   .copy-button {
     opacity: 1;
@@ -1497,20 +1540,16 @@ dialog::backdrop {
   }
   .stop-button {
     height: 32px;
-    font-size: 10px;
   }
   .composer-footer {
-    font-size: 8px;
     margin-top: 8px;
     gap: 9px;
   }
   .mode-help {
     max-width: 56%;
-    font-size: 9px;
   }
   .privacy-note {
     max-width: 44%;
-    font-size: 9px;
   }
   .jump-bottom {
     bottom: 220px;
@@ -1558,10 +1597,6 @@ dialog::backdrop {
   }
   .config-button {
     padding: 0 7px;
-    font-size: 10px;
-  }
-  .web-toggle {
-    font-size: 10px;
   }
   .composer-bottom {
     gap: 4px;

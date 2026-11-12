@@ -50,15 +50,8 @@
           </button>
           <div class="heading-wrap"><h1 class="room-heading" id="roomHeading">新的讨论</h1></div>
           <div class="top-actions">
-            <button class="connection-pill checking" id="codexPill" aria-label="查看 Codex 连接状态">
-              <span class="connection-dot"></span>Codex
-            </button>
-            <button class="connection-pill checking" id="claudePill" aria-label="查看 Claude 连接状态">
-              <span class="connection-dot"></span>Claude
-            </button>
-            <button class="connection-pill checking" id="cursorPill" aria-label="查看 Cursor 连接状态">
-              <span class="connection-dot"></span>Cursor
-            </button>
+            <!-- One status pill per provider of the server's registry (js/health.js). -->
+            <div class="connection-pills" id="connectionPills"></div>
             <button
               class="icon-button export-button"
               id="exportButton"
@@ -98,7 +91,7 @@
                 >
                   <span class="suggestion-title">理清一个选择</span
                   ><span class="suggestion-text">比较得失、前提和放弃的成本</span
-                  ><span class="suggestion-arrow">↗</span>
+                  ><span class="suggestion-arrow" aria-hidden="true">↗</span>
                 </button>
                 <button
                   class="suggestion"
@@ -106,7 +99,7 @@
                 >
                   <span class="suggestion-title">商量一次旅行</span
                   ><span class="suggestion-text">在想去的地方和轻松之间平衡</span
-                  ><span class="suggestion-arrow">↗</span>
+                  ><span class="suggestion-arrow" aria-hidden="true">↗</span>
                 </button>
                 <button
                   class="suggestion"
@@ -114,7 +107,7 @@
                 >
                   <span class="suggestion-title">审查一个方案</span
                   ><span class="suggestion-text">找出遗漏、风险和更好的路径</span
-                  ><span class="suggestion-arrow">↗</span>
+                  ><span class="suggestion-arrow" aria-hidden="true">↗</span>
                 </button>
               </div>
             </section>
@@ -161,7 +154,9 @@
                       stroke-linecap="round"
                       stroke-linejoin="round"
                     /></svg
-                  >共同背景<span class="context-dot" id="contextDot" hidden></span>
+                  >共同背景<span class="context-dot" id="contextDot" hidden
+                    ><span class="sr-only">（已填写）</span></span
+                  >
                 </button>
               </div>
               <label class="sr-only" for="prompt">你想讨论的问题</label

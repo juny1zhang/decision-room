@@ -1,18 +1,21 @@
-// Shared UI state, the constants that describe providers and stages, and the predicates and
-// configuration snapshots derived from them. Every other module reads and writes this one object.
+// Shared UI state, the providers and stage names, and the predicates and configuration snapshots derived
+// from them. Every other module reads and writes this one object.
 import { token } from './api.js';
 import { $ } from './dom.js';
+import { DEFAULT_PROVIDERS, isProviderId, readProviders } from './providers.js';
 
-export const providers = ['codex', 'claude', 'cursor'];
+/**
+ * Provider ids in registry order. Until the first health response this is the default list (see
+ * providers.js); setProviders() then replaces it, and every importer sees the new list.
+ */
+export let providers = DEFAULT_PROVIDERS.map((provider) => provider.id);
+/** The label of every provider id seen so far, also of one a newer registry no longer lists. */
+const labels = new Map(DEFAULT_PROVIDERS.map(({ id, label }) => [id, label]));
+/** Whether `providers` is the server's registry rather than the default list. */
+let registryKnown = false;
 
-export const names = {
-  codex: 'Codex',
-  claude: 'Claude',
-  cursor: 'Cursor',
-  user: '你',
-  summary: '主持人总结',
-  system: '讨论提示'
-};
+/** A provider's label. An id without one (not in the registry, or not known yet) is shown as it is. */
+export const providerName = (id) => labels.get(id) ?? String(id);
 
 export const stageNames = {
   notice: '提示',
@@ -34,8 +37,8 @@ export const state = {
   serverBusy: false,
   stopping: false,
   mode: 'debate',
-  participants: ['codex', 'claude'],
-  moderator: 'codex',
+  participants: providers.slice(0, 2),
+  moderator: providers[0],
   settings: {},
   selectionRestored: false,
   context: '',
@@ -45,7 +48,7 @@ export const state = {
 };
 
 /** "Single" mode is stored as the id of the one provider being asked. */
-export const isSingle = () => providers.includes(state.mode);
+export const isSingle = () => state.mode !== 'debate' && state.mode !== 'both';
 export const ready = (id) =>
   Boolean(state.health?.[id]?.subscription && state.health[id].authenticated && state.health[id].available);
 export const supportsWeb = (members) =>
@@ -80,21 +83,32 @@ export function configuration() {
   };
 }
 
+/**
+ * Whether a saved selection may name `id`. Before the registry is known any well-formed id may, so that a
+ * selection of a provider outside the default list survives until the registry confirms or drops it.
+ */
+const selectable = (id) => (registryKnown ? providers.includes(id) : isProviderId(id));
+
 /** Restores a selection saved in a draft or a room; ignores anything malformed. */
 export function restoreConfiguration(config) {
-  if (!config || !['debate', 'both', ...providers].includes(config.mode)) return;
-  const members = providers.includes(config.mode)
+  if (!config || typeof config.mode !== 'string') return;
+  const single = config.mode !== 'debate' && config.mode !== 'both';
+  if (single && !selectable(config.mode)) return;
+  const listed = Array.isArray(config.participants)
+    ? [...new Set(config.participants.filter(selectable))]
+    : providers.slice(0, 2);
+  // Registry order first; ids the default list does not know keep their saved order after it.
+  const members = single
     ? [config.mode]
-    : Array.isArray(config.participants)
-      ? providers.filter((id) => config.participants.includes(id))
-      : ['codex', 'claude'];
-  if (!providers.includes(config.mode) && members.length < 2) return;
+    : [...providers.filter((id) => listed.includes(id)), ...listed.filter((id) => !providers.includes(id))];
+  if (!single && members.length < 2) return;
   state.mode = config.mode;
   state.participants = members;
   state.moderator = members.includes(config.moderator) ? config.moderator : members[0];
+  const saved = config.settings && typeof config.settings === 'object' ? config.settings : {};
   state.settings = {};
-  for (const id of providers) {
-    const settings = config.settings?.[id] || {};
+  for (const id of new Set([...providers, ...members])) {
+    const settings = (Object.hasOwn(saved, id) && saved[id]) || {};
     state.settings[id] = {
       model: typeof settings.model === 'string' ? settings.model : '',
       reasoning: typeof settings.reasoning === 'string' ? settings.reasoning : '',
@@ -103,6 +117,34 @@ export function restoreConfiguration(config) {
   }
   $('webSearch').checked = Boolean(config.webSearch);
   state.selectionRestored = true;
+}
+
+/**
+ * Takes the provider registry of a health response ([{ id, label }]). Participants it does not list leave
+ * the selection; when too few remain, the selection starts over as on a first visit. Returns whether an id,
+ * their order or a label changed, i.e. whether names already on the page need refreshing.
+ */
+export function setProviders(list) {
+  const next = readProviders(list);
+  if (!next) return false;
+  const changed =
+    next.length !== providers.length ||
+    next.some(({ id, label }, index) => id !== providers[index] || label !== labels.get(id));
+  providers = next.map(({ id }) => id);
+  for (const { id, label } of next) labels.set(id, label);
+  registryKnown = true;
+  const members = providers.filter((id) => state.participants.includes(id));
+  if (members.length === state.participants.length) state.participants = members;
+  else if (members.length >= (isSingle() ? 1 : 2)) {
+    state.participants = members;
+    if (!members.includes(state.moderator)) state.moderator = members[0];
+  } else {
+    state.participants = providers.slice(0, 2);
+    state.moderator = providers[0];
+    state.mode = state.participants.length > 1 ? 'debate' : providers[0];
+    state.selectionRestored = false;
+  }
+  return changed;
 }
 
 /** Until the user picks participants, default to the first two (or the only) connected tools. */

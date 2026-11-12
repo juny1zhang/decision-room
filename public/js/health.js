@@ -1,36 +1,66 @@
-// Tool connections: the status pills in the top bar, the "工具连接" dialog and /api/health checks,
-// which keep polling while a discussion started elsewhere is still running on the server.
+// Tool connections: the status pills in the top bar (one per provider of the server's registry), the
+// "工具连接" dialog and /api/health checks, which keep polling while a discussion started elsewhere is
+// still running on the server.
 import { api, normalError, token } from './api.js';
 import { updateControls } from './composer.js';
 import { $, closeOnBackdropClick, element } from './dom.js';
+import { refreshProviderNames } from './messages.js';
 import { showError } from './notices.js';
+import { connectionName, connectionStatus } from './providers.js';
 import { loadRoom } from './rooms.js';
-import { defaultParticipants, names, providers, state } from './state.js';
+import { defaultParticipants, providerName, providers, setProviders, state } from './state.js';
 
 let healthPoll;
 
-export function renderHealth() {
-  for (const name of providers) {
-    const agent = state.health?.[name];
-    const pill = $(name + 'Pill');
-    const status = state.checking
-      ? 'checking'
-      : agent?.available && agent?.authenticated && agent?.subscription
-        ? 'ready'
-        : agent?.available
-          ? 'warning'
-          : 'offline';
+function openHealth() {
+  renderHealth();
+  $('healthDialog').showModal();
+}
+
+function createPill(id) {
+  const pill = element('button', 'connection-pill');
+  pill.type = 'button';
+  pill.id = id + 'Pill';
+  pill.dataset.provider = id;
+  const dot = element('span', 'connection-dot');
+  dot.setAttribute('aria-hidden', 'true');
+  pill.append(dot, element('span', 'connection-label'));
+  pill.addEventListener('click', openHealth);
+  return pill;
+}
+
+/**
+ * One pill per provider, in registry order. The dot's shape (see app.css) and the accessible name carry the
+ * status, so neither depends on colour. Buttons are reused, so a focused pill keeps its focus.
+ */
+function renderPills(checking = state.checking) {
+  const group = $('connectionPills');
+  const existing = new Map([...group.children].map((pill) => [pill.dataset.provider, pill]));
+  const pills = providers.map((id) => existing.get(id) || createPill(id));
+  if (pills.length !== group.children.length || pills.some((pill, index) => group.children[index] !== pill))
+    group.replaceChildren(...pills);
+  for (const pill of pills) {
+    const id = pill.dataset.provider;
+    const name = providerName(id);
+    const { status, text } = connectionStatus(state.health, id, checking);
     pill.className = `connection-pill ${status}`;
-    pill.title = state.checking ? '正在检查…' : agent?.message || '尚未连接';
+    pill.lastChild.textContent = name;
+    pill.setAttribute('aria-label', connectionName(name, text));
+    pill.title = checking ? '正在检查…' : state.health?.[id]?.message || '尚未连接';
   }
+}
+
+export function renderHealth() {
+  renderPills();
   const details = $('healthDetails');
   details.replaceChildren();
-  for (const name of providers) {
-    const agent = state.health?.[name],
+  for (const id of providers) {
+    const agent = state.health?.[id],
       ok = agent?.available && agent?.authenticated && agent?.subscription;
     const box = element('section', 'health-agent');
+    box.dataset.provider = id;
     const title = element('div', 'health-title');
-    title.append(element('span', '', names[name]));
+    title.append(element('span', '', providerName(id)));
     title.append(
       element(
         'span',
@@ -79,6 +109,8 @@ export async function checkHealth(force = false) {
       await api(force ? '/api/health?refresh=1' : '/api/health', { signal: controller.signal })
     ).json();
     state.health = data;
+    // The server's registry decides which providers the page shows.
+    if (setProviders(data.providers)) refreshProviderNames();
     defaultParticipants();
     state.serverBusy = Boolean(data.busy);
     // A discussion running on the server has finished: show its result.
@@ -97,11 +129,8 @@ export async function checkHealth(force = false) {
 }
 
 export function setupHealth() {
-  for (const name of providers)
-    $(name + 'Pill').addEventListener('click', () => {
-      renderHealth();
-      $('healthDialog').showModal();
-    });
+  // Before the first check answers, the default providers show as being checked.
+  renderPills(true);
   $('closeHealth').addEventListener('click', () => $('healthDialog').close());
   $('refreshHealth').addEventListener('click', () => checkHealth(true));
   closeOnBackdropClick($('healthDialog'));

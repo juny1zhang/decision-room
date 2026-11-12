@@ -3,9 +3,19 @@
 import { savePreferences, token } from './api.js';
 import { $, element } from './dom.js';
 import { DRAFT_KEY, storage } from './storage.js';
-import { canUseMode, configuration, isSingle, names, providers, ready, state, supportsWeb } from './state.js';
+import {
+  canUseMode,
+  configuration,
+  isSingle,
+  providerName,
+  providers,
+  ready,
+  state,
+  supportsWeb
+} from './state.js';
 
 let draftTimer;
+let resizeFrame;
 
 /** Re-derives the enabled/hidden state and labels of all controls from the current state. */
 export function updateControls() {
@@ -33,8 +43,8 @@ export function updateControls() {
   $('newRoom').disabled = running;
   $('exportButton').disabled = !state.roomId;
   $('mobileExport').hidden = !state.roomId;
-  const team = state.participants.map((id) => names[id]).join('、');
-  const teamCaption = state.mode === 'debate' ? team + ' · ' + names[state.moderator] + ' 归纳' : team;
+  const team = state.participants.map(providerName).join('、');
+  const teamCaption = state.mode === 'debate' ? team + ' · ' + providerName(state.moderator) + ' 归纳' : team;
   $('modeHelp').textContent = state.checking
     ? '正在检查本机工具…'
     : !token
@@ -43,19 +53,25 @@ export function updateControls() {
         ? '当前参与者未就绪，可在「模型与能力」中更换。'
         : teamCaption;
   $('configureButton').title = '设置参与者、模型和能力 · ' + team;
+  // One badge per participant, coloured through data-provider (see app.css).
   const badges = $('activeParticipants');
-  if (badges.dataset.team !== team) {
-    badges.dataset.team = team;
+  const badgeKey = state.participants.map((id) => `${id}:${providerName(id)}`).join(' ');
+  if (badges.dataset.team !== badgeKey) {
+    badges.dataset.team = badgeKey;
     badges.replaceChildren(
-      ...state.participants.map((id) => element('span', 'participant ' + id, names[id]))
+      ...state.participants.map((id) => {
+        const badge = element('span', 'participant', providerName(id));
+        badge.dataset.provider = id;
+        return badge;
+      })
     );
   }
   $('flowDescription').textContent =
     state.mode === 'debate'
-      ? '参与者先各自回答，再交换意见。由 ' + names[state.moderator] + ' 整理共识与分歧。'
+      ? '参与者先各自回答，再交换意见。由 ' + providerName(state.moderator) + ' 整理共识与分歧。'
       : state.mode === 'both'
         ? '参与者将独立回答同一个问题，你可以逐条比较各自的理由。'
-        : '由 ' + names[state.participants[0]] + ' 回答这个问题，你可以在同一场讨论中继续追问。';
+        : '由 ' + providerName(state.participants[0]) + ' 回答这个问题，你可以在同一场讨论中继续追问。';
   $('contextDot').hidden = !state.context.trim();
   $('progress').hidden = !running;
   if (running) {
@@ -103,12 +119,17 @@ export function persistDraft() {
   }, 250);
 }
 
-/** Grows the prompt with its content (up to a cap), then refreshes the controls and the draft. */
-export function autosize() {
+/** Fits the prompt's height to its content, up to the max-height app.css gives it at the current width. */
+function fitPrompt() {
   const input = $('prompt');
   input.style.height = 'auto';
-  input.style.height =
-    Math.min(input.scrollHeight, matchMedia('(max-width:760px)').matches ? 130 : 165) + 'px';
+  const cap = Number.parseFloat(getComputedStyle(input).maxHeight); // NaN for "none"
+  input.style.height = (Number.isFinite(cap) ? Math.min(input.scrollHeight, cap) : input.scrollHeight) + 'px';
+}
+
+/** Grows the prompt with its content (up to a cap), then refreshes the controls and the draft. */
+export function autosize() {
+  fitPrompt();
   updateControls();
   persistDraft();
 }
@@ -133,4 +154,9 @@ export function setupComposer() {
       $('prompt').focus();
     });
   $('webSearch').addEventListener('change', persistDraft);
+  // A new width rewraps the prompt and may cross a breakpoint with another max-height.
+  addEventListener('resize', () => {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(fitPrompt);
+  });
 }
