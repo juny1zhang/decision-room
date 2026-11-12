@@ -1,0 +1,15 @@
+{
+  "name": "decision-room",
+  "version": "1.1.0",
+  "private": true,
+  "description": "A local discussion room for Codex, Claude Code and Cursor Agent",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node server.mjs --check",
+    "test": "node --test tests/*.test.mjs"
+  }
+}
