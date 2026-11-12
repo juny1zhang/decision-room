@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>议事间 · Decision Room</title>
+    <link rel="stylesheet" href="app.css" />
+    <!-- blocking="render": the app initialises before the first paint, as the former inline script did. -->
+    <script type="module" src="app.js" blocking="render"></script>
+  </head>
+  <body>
+    <div class="app">
+      <div class="mobile-overlay" id="mobileOverlay"></div>
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <span class="brand-mark"
+            ><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 5.5h10v9H8l-4 3v-12Z" stroke="currentColor" stroke-width="1.4" />
+              <path d="M10 9h10v11l-4-3h-6" stroke="currentColor" stroke-width="1.4" /></svg
+          ></span>
+          <div>
+            <div class="brand-name">议事间</div>
+            <div class="brand-sub">DECISION ROOM</div>
+          </div>
+        </div>
+        <button class="new-button" id="newRoom">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg
+          >新的讨论
+        </button>
+        <div class="history" id="history">
+          <div class="sidebar-label">讨论记录</div>
+          <div id="roomList"><p class="history-empty">正在读取…</p></div>
+        </div>
+        <button class="new-button" id="mobileExport" hidden>导出当前讨论</button>
+        <div class="sidebar-bottom"><span class="tiny-dot"></span><span>在你的电脑上运行</span></div>
+      </aside>
+      <main class="main">
+        <header class="topbar">
+          <button class="icon-button menu-button" id="menuButton" aria-label="打开讨论记录">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path
+                d="M4 5h12M4 10h12M4 15h12"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+          <div class="heading-wrap"><h1 class="room-heading" id="roomHeading">新的讨论</h1></div>
+          <div class="top-actions">
+            <button class="connection-pill checking" id="codexPill" aria-label="查看 Codex 连接状态">
+              <span class="connection-dot"></span>Codex
+            </button>
+            <button class="connection-pill checking" id="claudePill" aria-label="查看 Claude 连接状态">
+              <span class="connection-dot"></span>Claude
+            </button>
+            <button class="connection-pill checking" id="cursorPill" aria-label="查看 Cursor 连接状态">
+              <span class="connection-dot"></span>Cursor
+            </button>
+            <button
+              class="icon-button export-button"
+              id="exportButton"
+              aria-label="导出当前讨论"
+              title="导出 Markdown"
+              disabled
+            >
+              <svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path
+                  d="M10 2.5v10m-3-3 3 3 3-3M4 12v4h12v-4"
+                  stroke="currentColor"
+                  stroke-width="1.35"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
+        </header>
+        <div class="error-banner" id="errorBanner" role="alert" hidden>
+          <div class="error-banner-content" id="errorText"></div>
+          <button id="dismissError" aria-label="关闭提示">×</button>
+        </div>
+        <div class="conversation" id="conversation" tabindex="0" aria-label="讨论内容">
+          <div class="conversation-inner">
+            <section class="empty-state" id="emptyState">
+              <div class="participants" id="activeParticipants" aria-label="本轮参与者"></div>
+              <h2 class="empty-title">今天想讨论什么？</h2>
+              <p class="empty-description">
+                <span id="flowDescription">选择参与者和模型，让他们独立回答或一起审查方案。</span>
+              </p>
+              <div class="empty-rule"></div>
+              <div class="suggestions">
+                <button
+                  class="suggestion"
+                  data-example="我在两个选择之间犹豫。请先帮我梳理判断标准，再分别分析取舍。\n\n选项 A：\n选项 B：\n我最在意的三件事："
+                >
+                  <span class="suggestion-title">理清一个选择</span
+                  ><span class="suggestion-text">比较得失、前提和放弃的成本</span
+                  ><span class="suggestion-arrow">↗</span>
+                </button>
+                <button
+                  class="suggestion"
+                  data-example="请帮我比较两个旅行方案，考虑交通、体力、预算和天气，给出推荐与备选。\n\n方案 A：\n方案 B：\n日期与预算："
+                >
+                  <span class="suggestion-title">商量一次旅行</span
+                  ><span class="suggestion-text">在想去的地方和轻松之间平衡</span
+                  ><span class="suggestion-arrow">↗</span>
+                </button>
+                <button
+                  class="suggestion"
+                  data-example="请审查这个技术方案，分析容易遗漏的边界和后续维护成本。\n\n当前情况：\n候选方案：\n时间与团队约束："
+                >
+                  <span class="suggestion-title">审查一个方案</span
+                  ><span class="suggestion-text">找出遗漏、风险和更好的路径</span
+                  ><span class="suggestion-arrow">↗</span>
+                </button>
+              </div>
+            </section>
+            <div id="messages" aria-live="polite" aria-relevant="additions"></div>
+          </div>
+        </div>
+        <button class="jump-bottom" id="jumpBottom" aria-label="跳到最新消息" hidden>
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path
+              d="M10 4v12m-5-5 5 5 5-5"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+        <section class="composer-area" aria-label="发送问题">
+          <div class="composer-inner">
+            <div class="progress" id="progress" role="status" hidden>
+              <span class="progress-spinner"></span
+              ><span class="progress-text" id="progressText">正在准备讨论…</span
+              ><span class="progress-elapsed" id="progressElapsed" aria-hidden="true"></span>
+            </div>
+            <form class="composer" id="composer">
+              <div class="mode-row">
+                <div class="modes" role="group" aria-label="讨论方式">
+                  <button type="button" class="mode-button active" data-mode="debate" aria-pressed="true">
+                    联合讨论
+                  </button>
+                  <button type="button" class="mode-button" data-mode="both" aria-pressed="false">
+                    分别回答
+                  </button>
+                  <button type="button" class="mode-button" data-mode="single" aria-pressed="false">
+                    单独提问
+                  </button>
+                </div>
+                <button type="button" class="context-button" id="contextButton">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path
+                      d="M4 2h6l3 3v9H4V2Zm6 0v3h3M6 8h5M6 11h5"
+                      stroke="currentColor"
+                      stroke-width="1.2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    /></svg
+                  >共同背景<span class="context-dot" id="contextDot" hidden></span>
+                </button>
+              </div>
+              <label class="sr-only" for="prompt">你想讨论的问题</label
+              ><textarea
+                class="prompt"
+                id="prompt"
+                maxlength="20000"
+                rows="2"
+                placeholder="说说你想决定什么，以及你最在意的事…"
+              ></textarea>
+              <div class="composer-bottom">
+                <div class="composer-options">
+                  <button type="button" class="config-button" id="configureButton" aria-haspopup="dialog">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path
+                        d="M2 4h4m3 0h5M2 12h7m3 0h2M2 8h1m3 0h8"
+                        stroke="currentColor"
+                        stroke-linecap="round"
+                      />
+                      <circle cx="7.5" cy="4" r="1.5" stroke="currentColor" />
+                      <circle cx="4.5" cy="8" r="1.5" stroke="currentColor" />
+                      <circle cx="10.5" cy="12" r="1.5" stroke="currentColor" /></svg
+                    >模型与能力</button
+                  ><label class="web-toggle" id="webControl"
+                    ><input type="checkbox" id="webSearch" />允许查找网页</label
+                  ><span class="key-hint" id="keyHint">⌘ Enter 发送</span>
+                </div>
+                <button type="submit" class="send-button" id="sendButton" disabled>
+                  <span id="sendLabel">开始讨论</span
+                  ><svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path
+                      d="M4 16 16 4M5 4h11v11"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg></button
+                ><button type="button" class="stop-button" id="stopButton" hidden>
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true">
+                    <rect x="1" y="1" width="8" height="8" rx="1" /></svg
+                  ><span id="stopLabel">停止讨论</span>
+                </button>
+              </div>
+            </form>
+            <div class="composer-footer">
+              <span class="mode-help" id="modeHelp">独立回答 · 交叉审查 · 汇总结论</span
+              ><span class="privacy-note">模型在云端处理 · 记录保存在本机</span>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <dialog id="contextDialog" aria-labelledby="contextTitle">
+      <div class="dialog-head">
+        <div>
+          <h2 class="dialog-title" id="contextTitle">共同背景</h2>
+          <div class="dialog-sub">
+            填写所有参与者需要了解的事实、目标与约束。<br />这里的内容会随你的下一次提问一起发送。
+          </div>
+        </div>
+        <button class="icon-button" id="closeContext" aria-label="关闭共同背景">×</button>
+      </div>
+      <div class="dialog-body">
+        <label class="sr-only" for="contextInput">填写共同背景</label
+        ><textarea
+          id="contextInput"
+          class="context-textarea"
+          maxlength="40000"
+          placeholder="我的目标：&#10;&#10;已经确认的事实：&#10;&#10;预算、时间与其他限制：&#10;&#10;还不确定的事情："
+        ></textarea>
+        <div class="dialog-foot">
+          <span id="contextCount">0 / 40,000 字符</span
+          ><button class="primary-button" id="saveContext">使用这份背景</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="configDialog" aria-labelledby="configTitle">
+      <form id="configForm">
+        <header class="dialog-head">
+          <div>
+            <h2 class="dialog-title" id="configTitle">模型与能力</h2>
+            <p class="dialog-sub" id="participantHint"></p>
+          </div>
+          <button type="button" class="icon-button" id="closeConfig" aria-label="关闭模型与能力">×</button>
+        </header>
+        <div class="config-scroll">
+          <div id="providerCards"></div>
+          <label class="moderator-row" id="moderatorField" for="moderator"
+            ><span>归纳主持人</span
+            ><select id="moderator"></select
+          ></label>
+        </div>
+        <footer class="config-footer">
+          <span id="configCount" role="status"></span
+          ><button class="primary-button" id="applyConfig" type="submit">应用设置</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="healthDialog" aria-labelledby="healthTitle">
+      <div class="dialog-head">
+        <div>
+          <h2 class="dialog-title" id="healthTitle">工具连接</h2>
+          <div class="dialog-sub">使用本机已登录的官方命令行工具。</div>
+        </div>
+        <button class="icon-button" id="closeHealth" aria-label="关闭工具连接">×</button>
+      </div>
+      <div class="dialog-body">
+        <div id="healthDetails"></div>
+        <div class="health-note">在终端登录你想使用的工具，再重新检查连接。</div>
+        <button class="secondary-button health-check-button" id="refreshHealth">重新检查连接</button>
+      </div>
+    </dialog>
+    <div class="toast" id="toast" role="status" hidden></div>
+  </body>
+</html>
