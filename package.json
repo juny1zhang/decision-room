@@ -3,6 +3,14 @@
   "version": "1.1.0",
   "private": true,
   "description": "A local discussion room for Codex, Claude Code and Cursor Agent",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/juny1zhang/decision-room.git"
+  },
+  "bugs": {
+    "url": "https://github.com/juny1zhang/decision-room/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=18"
