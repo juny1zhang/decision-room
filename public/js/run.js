@@ -1,10 +1,18 @@
 // Running a discussion: POST /api/run, read its newline-delimited JSON event stream into the
-// conversation, show live previews, progress and elapsed time, and stop a run through /api/cancel.
+// conversation, show live previews, progress and elapsed time, resume an incomplete turn ("重试未完成的部分")
+// and stop a run through /api/cancel.
 import { api, normalError } from './api.js';
 import { autosize, updateControls } from './composer.js';
 import { $ } from './dom.js';
 import { checkHealth } from './health.js';
-import { appendMessage, clearPreviews, dropPreviews, showPreview } from './messages.js';
+import {
+  appendMessage,
+  clearPreviews,
+  dropPreviews,
+  onResume,
+  showPreview,
+  updateResume
+} from './messages.js';
 import { clearError, showError } from './notices.js';
 import { loadRoom, refreshRooms, rememberRoom, setHeading } from './rooms.js';
 import { canUseMode, configuration, providerName, stageNames, state } from './state.js';
@@ -12,11 +20,14 @@ import { canUseMode, configuration, providerName, stageNames, state } from './st
 let elapsedTimer;
 /** Set while a new room waits for its first saved message, which puts it in the sidebar. */
 let newRoomPending = false;
+/** Set while the run resumes an incomplete turn rather than asking the question in the composer. */
+let resuming = false;
 
 /**
  * Applies one event of the run stream: room | message | delta | status | error | done (see
  * src/discussion.mjs). A delta adds to the live preview of an answer, which its message replaces; the
- * previews of a participant that failed (status stage 'error') go, and any left go when the run ends.
+ * previews of a participant that failed (status stage 'error') or retries its call (status retry) go, and
+ * any left go when the run ends.
  */
 function eventReceived(event) {
   if (event.type === 'delta') {
@@ -28,8 +39,11 @@ function eventReceived(event) {
     state.roomId = event.roomId;
     rememberRoom(event.roomId);
     setHeading(event.title);
-    $('prompt').value = '';
-    autosize();
+    // A resumed turn leaves the composer's draft alone.
+    if (!resuming) {
+      $('prompt').value = '';
+      autosize();
+    }
   } else if (event.type === 'message') {
     appendMessage(event.message);
     if (event.message.role !== 'user') state.statuses.delete(event.message.provider || event.message.role);
@@ -39,7 +53,7 @@ function eventReceived(event) {
       refreshRooms();
     }
   } else if (event.type === 'status') {
-    if (event.agent && event.stage === 'error') dropPreviews(event.agent);
+    if (event.agent && (event.stage === 'error' || event.retry)) dropPreviews(event.agent);
     const agent = event.agent ? providerName(event.agent) : '讨论';
     state.statuses.set(
       event.agent || 'system',
@@ -94,11 +108,13 @@ function stopElapsedClock() {
   $('progressElapsed').textContent = '';
 }
 
-async function submit(event) {
-  event.preventDefault();
-  const prompt = $('prompt').value.trim();
-  if (!prompt || state.busy || state.serverBusy || !canUseMode()) return;
+/**
+ * Runs a discussion with the /api/run `body` and streams it into the conversation: a new question, or
+ * with `resume` the missing part of the open room's latest turn.
+ */
+async function startRun(body, { resume = false } = {}) {
   clearError();
+  resuming = resume;
   state.busy = true;
   state.stopping = false;
   state.statuses.clear();
@@ -111,7 +127,7 @@ async function submit(event) {
   try {
     const response = await api('/api/run', {
       method: 'POST',
-      body: JSON.stringify({ roomId: state.roomId, prompt, context: state.context, ...configuration() }),
+      body: JSON.stringify(body),
       signal: state.streamController.signal
     });
     if (!response.body) throw new Error('浏览器无法读取实时回答，请使用较新的 Chrome 或 Safari。');
@@ -133,6 +149,7 @@ async function submit(event) {
     state.statuses.clear();
     clearPreviews();
     newRoomPending = false;
+    resuming = false;
     stopElapsedClock();
     updateControls();
     // A complete stream already showed every message; only the sidebar's counts and order changed.
@@ -141,6 +158,22 @@ async function submit(event) {
     else if (streamed && state.roomId) await loadRoom(state.roomId, { silent: true, restoreOptions: false });
     await checkHealth();
   }
+}
+
+async function submit(event) {
+  event.preventDefault();
+  const prompt = $('prompt').value.trim();
+  if (!prompt || state.busy || state.serverBusy || !canUseMode()) return;
+  await startRun({ roomId: state.roomId, prompt, context: state.context, ...configuration() });
+}
+
+/** Runs what is missing of turn `turnId`, the open room's latest, with the settings it was asked with. */
+async function resume(turnId) {
+  if (!turnId || !state.roomId || state.busy || state.serverBusy) return;
+  const run = startRun({ roomId: state.roomId, resumeTurnId: turnId }, { resume: true });
+  // The button goes while the turn runs; keep the keyboard focus on the way to stop it.
+  $('stopButton').focus();
+  await run;
 }
 
 async function stop() {
@@ -167,6 +200,10 @@ async function stop() {
 export function setupRun() {
   $('composer').addEventListener('submit', submit);
   $('stopButton').addEventListener('click', stop);
+  onResume(resume);
+  // The composer disables "新的讨论" exactly while a discussion runs, here or in another tab (see
+  // updateControls): the resume button follows it.
+  new MutationObserver(updateResume).observe($('newRoom'), { attributeFilter: ['disabled'] });
   window.addEventListener('beforeunload', (event) => {
     if (state.busy) {
       event.preventDefault();

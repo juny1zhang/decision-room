@@ -7,6 +7,18 @@ import { PROVIDER_IDS, isProviderId, providerLabel } from './providers/index.mjs
 
 export { isModelId };
 
+/** A message id, as made by randomUUID(). */
+const MESSAGE_ID = /^[a-f0-9-]{36}$/;
+
+/**
+ * The turn a /api/run body asks to resume (`resumeTurnId`: the id of the turn's question). Throws an
+ * AppError (400) when it is not a message id.
+ */
+export function readTurnId(value) {
+  if (typeof value !== 'string' || !MESSAGE_ID.test(value)) throw new AppError('要重试的轮次无效。');
+  return value;
+}
+
 /** "A、B 和 C" */
 function listLabels(ids) {
   const labels = ids.map(providerLabel);

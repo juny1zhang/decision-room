@@ -1,20 +1,34 @@
-// One discussion round: checks, independent analyses, cross-reviews and the moderator's summary, streamed
+// One discussion turn: checks, independent analyses, cross-reviews and the moderator's summary, streamed
 // to the browser as NDJSON events and saved to the room after every message.
 //
 // Events: { type: 'room', roomId, title } first; { type: 'message', message } for every saved message;
-// { type: 'status', agent, stage, text } as a participant starts, thinks, searches the web, finishes or
-// fails (stage 'error'); { type: 'delta', agent, stage, append, reset? } with the text a participant's CLI
-// streams before its answer is final (see livePreview); { type: 'heartbeat' } while nothing else happens;
-// { type: 'done', roomId } last. Answer messages also store durationMs and, when the CLI reports it,
-// usage { inputTokens, outputTokens, cachedInputTokens }.
+// { type: 'status', agent, stage, text, retry? } as a participant starts, thinks, searches the web, retries
+// after a lost connection (retry: true; its preview starts over), finishes or fails (stage 'error');
+// { type: 'delta', agent, stage, append, reset? } with the text a participant's CLI streams before its
+// answer is final (see livePreview); { type: 'heartbeat' } while nothing else happens; { type: 'done',
+// roomId } last. Answer messages also store durationMs and, when the CLI reports it, usage { inputTokens,
+// outputTokens, cachedInputTokens }.
+//
+// Every message of a turn carries turnId, the id of the turn's question (the question's own included). A
+// call that fails for a network reason is tried once more. A debate goes on without the participants that
+// failed as long as two analyses (then two reviews) succeeded. An incomplete turn can be resumed: { roomId,
+// resumeTurnId } runs only what is missing of it (see turnProgress).
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { HEARTBEAT_INTERVAL, MAX_CONTEXT, MAX_MESSAGES, MAX_PROMPT, MAX_REPLY } from './config.mjs';
 import { AppError } from './errors.mjs';
-import { contextInEffect, hasContextSnapshot, roomMessages } from './messages.mjs';
+import {
+  contextInEffect,
+  hasContextSnapshot,
+  messageText,
+  questionContexts,
+  resultModel,
+  roomMessages
+} from './messages.mjs';
 import {
   analysisPrompt,
-  attributed,
   historyFor,
+  participantNames,
   reviewPrompt,
   roundPrompt,
   summaryPrompt,
@@ -23,7 +37,7 @@ import {
 import { providerLabel } from './providers/index.mjs';
 import { safeDetail } from './redact.mjs';
 import { defaultTitle } from './titles.mjs';
-import { readConfiguration } from './validation.mjs';
+import { readConfiguration, readTurnId, savedConfiguration } from './validation.mjs';
 
 const STAGE_STATUS = { analysis: '正在独立分析', review: '正在交叉审查', summary: '正在整理决策结论' };
 const STAGE_TASK = { analysis: '分析', review: '审查', summary: '整理' };
@@ -31,6 +45,9 @@ const STAGE_TASK = { analysis: '分析', review: '审查', summary: '整理' };
 const ACTIVITY_STATUS = { thinking: '正在思考', searching: '正在检索网页' };
 /** Least time between two preview events of one call. */
 const DELTA_INTERVAL = 120;
+/** Wait before the one retry of a call that lost its connection. */
+export const RETRY_DELAY = 1500;
+const RETRY_STATUS = '连接中断，正在重试…';
 
 /**
  * The live preview of one call by `agent` for `stage`. text(chunk) collects the answer text the CLI
@@ -155,40 +172,127 @@ function historyNotice({ omitted, shortened }) {
   return `为控制长度，本轮发送给模型的讨论记录${cuts.join('，并')}；完整记录仍可查看和导出。`;
 }
 
+/** An answer message as material for a review or summary prompt. */
+const materialOf = (message) => ({
+  agent: message.provider,
+  model: resultModel(message),
+  text: messageText(message)
+});
+
 /**
- * Runs one round for a /api/run `body` and streams it to `response`. Throws an AppError, before anything
- * is written, when the request is invalid or a participant is not ready. `signal` stops the round; work
- * already finished is kept. deps: { health (a health checker), invoke (see invoke.mjs), rooms (a room store),
- * onRoom (optional: called with the room's id once it is known, before the room is first saved) }.
+ * What the turn that `question` started in `room` holds for `participants`: { analyses, reviews,
+ * summarized }. analyses and reviews map each participant to its latest analysis and review message;
+ * summarized tells whether a summary came after the last of them.
+ */
+export function turnProgress(room, question, participants) {
+  const analyses = new Map();
+  const reviews = new Map();
+  let summaryAt = -1;
+  let answerAt = -1;
+  roomMessages(room).forEach((message, index) => {
+    if (message === question || message.turnId !== question.id) return;
+    if (message.role === 'summary' && message.stage === 'summary') summaryAt = index;
+    else if (participants.includes(message.role) && ['analysis', 'review'].includes(message.stage)) {
+      (message.stage === 'analysis' ? analyses : reviews).set(message.role, message);
+      answerAt = index;
+    }
+  });
+  return { analyses, reviews, summarized: summaryAt > answerAt };
+}
+
+/**
+ * Whether a turn asked with `configuration` is complete: every participant answered, and in a debate also
+ * reviewed, and a summary came after all of that.
+ */
+export function turnComplete({ mode, participants }, { analyses, reviews, summarized }) {
+  if (!participants.every((agent) => analyses.has(agent))) return false;
+  return mode !== 'debate' || (participants.every((agent) => reviews.has(agent)) && summarized);
+}
+
+/**
+ * The turn a { roomId, resumeTurnId } body asks to resume, as { room, question, configuration, prompt,
+ * context, history, progress }: the configuration, question and shared context it was asked with, the
+ * earlier discussion as it was then (see historyFor) and what the turn holds (see turnProgress). Throws an
+ * AppError when it cannot be resumed: unknown (400), saved without turn ids by an older version, not the
+ * room's latest turn, without a readable configuration, or complete (409).
+ */
+async function resumedTurn(body, rooms) {
+  const turnId = readTurnId(body.resumeTurnId);
+  if (typeof body.roomId !== 'string') throw new AppError('请指定要重试的讨论。');
+  const room = await rooms.load(body.roomId);
+  const messages = roomMessages(room);
+  const index = messages.findIndex((message) => message.id === turnId && message.role === 'user');
+  if (index < 0) throw new AppError('找不到要重试的这一轮讨论。');
+  const question = messages[index];
+  if (question.turnId !== question.id)
+    throw new AppError('这一轮来自旧版本的记录，无法重试。请重新提问。', 409);
+  if (messages.slice(index + 1).some((message) => message.role === 'user'))
+    throw new AppError('只能重试最近一轮未完成的部分。', 409);
+  const saved = savedConfiguration(question.configuration);
+  const prompt = messageText(question).trim();
+  if (!saved || !prompt) throw new AppError('这一轮的设置或问题无法读取，无法重试。请重新提问。', 409);
+  const configuration = readConfiguration(saved);
+  const progress = turnProgress(room, question, configuration.participants);
+  if (turnComplete(configuration, progress)) throw new AppError('这一轮已经完成，无需重试。', 409);
+  // The history as the question saw it: the messages before it, with the contexts they were asked with.
+  const contexts = questionContexts(room);
+  const context = contexts.get(question) ?? '';
+  const before = messages.slice(0, index);
+  const earlier = before.findLast((message) => message.role === 'user');
+  const history = historyFor(
+    { ...room, messages: before, context: earlier ? contexts.get(earlier) : '' },
+    context
+  );
+  return { room, question, configuration, prompt, context, history, progress };
+}
+
+/**
+ * Runs one turn for a /api/run `body` and streams it to `response`: a new question ({ roomId?, prompt,
+ * context, ...configuration }), or with { roomId, resumeTurnId } what is missing of the room's latest turn,
+ * with the configuration, question and context it was asked with. Throws an AppError, before anything is
+ * written, when the request is invalid or a participant is not ready. `signal` stops the turn; work already
+ * finished is kept. deps: { health (a health checker), invoke (see invoke.mjs), rooms (a room store), onRoom
+ * (optional: called with the room's id once it is known, before the room is first saved) }.
  */
 export async function runDiscussion(body, response, signal, { health, invoke, rooms, onRoom }) {
-  const configuration = readConfiguration(body);
+  const resume = body.resumeTurnId !== undefined ? await resumedTurn(body, rooms) : null;
+  const configuration = resume ? resume.configuration : readConfiguration(body);
   const { mode, participants: agents, moderator, settings, webSearch } = configuration;
-  const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
-  const context = typeof body.context === 'string' ? body.context : '';
-  if (!prompt || prompt.length > MAX_PROMPT) throw new AppError('问题不能为空，且不能超过 20,000 字符。');
-  if (context.length > MAX_CONTEXT) throw new AppError('共享背景不能超过 40,000 字符。');
+  let prompt, context;
+  if (resume) ({ prompt, context } = resume);
+  else {
+    prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
+    context = typeof body.context === 'string' ? body.context : '';
+    if (!prompt || prompt.length > MAX_PROMPT) throw new AppError('问题不能为空，且不能超过 20,000 字符。');
+    if (context.length > MAX_CONTEXT) throw new AppError('共享背景不能超过 40,000 字符。');
+  }
   // Reads every participant's login status again; version, help and model checks are reused.
   const currentHealth = await health.check('login', signal, agents);
   if (signal.aborted) throw new AppError('讨论已停止。');
   checkParticipants(currentHealth, configuration);
   const now = new Date().toISOString();
-  const room = body.roomId
-    ? await rooms.load(body.roomId)
-    : {
-        id: randomUUID(),
-        title: defaultTitle(prompt),
-        createdAt: now,
-        updatedAt: now,
-        context,
-        messages: []
-      };
+  const room = resume
+    ? resume.room
+    : body.roomId
+      ? await rooms.load(body.roomId)
+      : {
+          id: randomUUID(),
+          title: defaultTitle(prompt),
+          createdAt: now,
+          updatedAt: now,
+          context,
+          messages: []
+        };
   onRoom?.(room.id);
   if (room.messages.length >= MAX_MESSAGES) throw new AppError('本次讨论已较长，请新开讨论并填写简短背景。');
-  const previous = historyFor(room, context);
-  const question = { configuration, ...contextChange(room, context) };
-  room.context = context;
-  room.configuration = configuration;
+  const turnId = resume ? resume.question.id : randomUUID();
+  const previous = resume ? resume.history : historyFor(room, context);
+  let question;
+  if (!resume) {
+    question = { configuration, ...contextChange(room, context) };
+    room.context = context;
+    room.configuration = configuration;
+  }
   response.writeHead(200, {
     'Content-Type': 'application/x-ndjson; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -198,94 +302,157 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
     if (!response.destroyed && !response.writableEnded) response.write(JSON.stringify(event) + '\n');
   };
   const add = async (role, text, stage, metadata = {}) => {
-    const message = { id: randomUUID(), role, text, stage, createdAt: new Date().toISOString(), ...metadata };
+    const message = {
+      id: randomUUID(),
+      turnId,
+      role,
+      text,
+      stage,
+      createdAt: new Date().toISOString(),
+      ...metadata
+    };
     room.messages.push(message);
     room.updatedAt = message.createdAt;
     await rooms.save(room);
     emit({ type: 'message', message });
     return message;
   };
+  const notice = (text) => add('system', text, 'notice');
   emit({ type: 'room', roomId: room.id, title: room.title });
   const heartbeat = setInterval(() => emit({ type: 'heartbeat' }), HEARTBEAT_INTERVAL);
   try {
-    await add('user', prompt, 'question', question);
-    if (previous.omitted || previous.shortened) await add('system', historyNotice(previous), 'notice');
+    if (!resume) {
+      await add('user', prompt, 'question', { id: turnId, ...question });
+      if (previous.omitted || previous.shortened) await notice(historyNotice(previous));
+    }
     const base = roundPrompt({ context, history: previous.text, prompt });
-    const status = (agent, stage, text) => emit({ type: 'status', agent, stage, text });
-    // Resolves to the answer, or to null when the call failed (recorded as an error message) or was stopped.
-    // While the call runs, its streamed text goes out as delta events and what the model does as statuses.
+    const status = (agent, stage, text, extra) => emit({ type: 'status', agent, stage, text, ...extra });
+
+    // Resolves to the saved answer message, or to null when the call failed (recorded as an error message)
+    // or was stopped. While the call runs, its streamed text goes out as delta events and what the model
+    // does as statuses. A call that fails for a network reason is tried once more after RETRY_DELAY.
     const perform = async (agent, task, stage, role = agent) => {
       if (signal.aborted) return null;
+      const focused = stage === 'summary' ? task : withCapability(settings[agent].capability, task);
       let shown = STAGE_STATUS[stage];
       status(agent, stage, shown);
-      const preview = livePreview(emit, agent, stage);
       const onActivity = (kind) => {
         const text = kind === 'writing' ? STAGE_STATUS[stage] : ACTIVITY_STATUS[kind];
         if (!text || text === shown || signal.aborted) return;
         shown = text;
         status(agent, stage, text);
       };
-      let answer;
-      try {
-        const focused = stage === 'summary' ? task : withCapability(settings[agent].capability, task);
-        answer = await invoke(agent, focused, webSearch, signal, settings[agent], {
-          onText: preview.text,
-          onActivity
-        });
-      } catch (e) {
-        preview.close();
+      for (let attempt = 1; ; attempt++) {
+        const preview = livePreview(emit, agent, stage);
+        let answer;
+        try {
+          answer = await invoke(agent, focused, webSearch, signal, settings[agent], {
+            onText: preview.text,
+            onActivity
+          });
+        } catch (e) {
+          preview.close();
+          if (signal.aborted) return null;
+          if (attempt === 1 && e.category === 'network') {
+            shown = RETRY_STATUS;
+            status(agent, stage, RETRY_STATUS, { retry: true });
+            await sleep(RETRY_DELAY, undefined, { signal }).catch(() => {});
+            if (signal.aborted) return null;
+            shown = STAGE_STATUS[stage];
+            status(agent, stage, shown);
+            continue;
+          }
+          await add(
+            'system',
+            `${providerLabel(agent)} ${STAGE_TASK[stage]}失败：${safeDetail(e.message)}`,
+            'error'
+          );
+          status(agent, 'error', '本轮未完成');
+          return null;
+        }
+        preview.close({ flush: !signal.aborted });
         if (signal.aborted) return null;
-        await add(
-          'system',
-          `${providerLabel(agent)} ${STAGE_TASK[stage]}失败：${safeDetail(e.message)}`,
-          'error'
-        );
-        status(agent, 'error', '本轮未完成');
-        return null;
+        const message = await add(role, answer.text, stage, {
+          provider: agent,
+          model: answer.model,
+          ...answerMeasures(answer)
+        });
+        status(agent, stage, '已完成');
+        return message;
       }
-      preview.close({ flush: !signal.aborted });
-      if (signal.aborted) return null;
-      await add(role, answer.text, stage, {
-        provider: agent,
-        model: answer.model,
-        ...answerMeasures(answer)
-      });
-      status(agent, stage, '已完成');
-      return answer;
     };
-    const answers = await Promise.all(
-      agents.map((agent) => perform(agent, analysisPrompt(base), 'analysis'))
+
+    // What the turn holds: from the stored turn when resuming, else nothing yet.
+    const analyses = new Map(resume?.progress.analyses);
+    const reviews = new Map(resume?.progress.reviews);
+    const summarized = Boolean(resume?.progress.summarized);
+    let added = false; // whether this run added an analysis or a review
+    /** Runs `stage` for `members` at once, `task(agent)` being each one's prompt, and keeps what succeeded. */
+    const runStage = async (stage, members, task) => {
+      const answers = await Promise.all(members.map((agent) => perform(agent, task(agent), stage)));
+      members.forEach((agent, index) => {
+        if (!answers[index]) return;
+        (stage === 'analysis' ? analyses : reviews).set(agent, answers[index]);
+        added = true;
+      });
+    };
+
+    await runStage(
+      'analysis',
+      agents.filter((agent) => !analyses.has(agent)),
+      () => analysisPrompt(base)
     );
-    if (signal.aborted) {
-      await add('system', '讨论已停止。已完成的回答保留；未完成的调用已终止。', 'notice');
-      return;
-    }
-    if (mode === 'debate' && answers.every(Boolean)) {
-      const analyses = attributed(answers, agents, '独立意见');
-      const reviews = await Promise.all(
-        agents.map((agent) => perform(agent, reviewPrompt(base, analyses, agent), 'review'))
+    if (signal.aborted) return void (await notice('讨论已停止。已完成的回答保留；未完成的调用已终止。'));
+    if (mode !== 'debate') return;
+    const analysed = agents.filter((agent) => analyses.has(agent));
+    const unanalysed = agents.filter((agent) => !analyses.has(agent));
+    if (analysed.length < 2)
+      return void (await notice(
+        '完成独立分析的参与者不足两位，本轮已停止交叉审查和归纳。可以重试未完成的部分，或根据已返回内容继续追问。'
+      ));
+    const reviewers = analysed.filter((agent) => !reviews.has(agent));
+    // Nothing to review and nothing new to summarize: a resumed turn whose missing analysis failed again.
+    if (!reviewers.length && !added && summarized) return;
+    if (unanalysed.length)
+      await notice(
+        `${participantNames(unanalysed)} 未完成独立分析，交叉审查和归纳只基于 ${participantNames(analysed)} 的分析继续。`
       );
-      if (signal.aborted) {
-        await add('system', '讨论已停止，已完成的回答与审查保留。', 'notice');
-        return;
-      }
-      if (reviews.every(Boolean)) {
-        await perform(
-          moderator,
-          summaryPrompt(base, analyses, attributed(reviews, agents, '审查'), moderator),
-          'summary',
-          'summary'
-        );
-      } else
-        await add(
-          'system',
-          '交叉审查未全部完成，因此本轮没有生成联合归纳。你可以根据已返回内容继续追问。',
-          'notice'
-        );
-    } else if (mode === 'debate') {
-      await add('system', '部分参与者未完成独立分析，本轮已停止互审和归纳。', 'notice');
-    }
-    if (signal.aborted) await add('system', '讨论已停止，已完成内容保留。', 'notice');
+    const analysisMaterial = analysed.map((agent) => materialOf(analyses.get(agent)));
+    await runStage('review', reviewers, (agent) =>
+      reviewPrompt(base, { analyses: analysisMaterial, missing: unanalysed, reviewer: agent })
+    );
+    if (signal.aborted) return void (await notice('讨论已停止，已完成的回答与审查保留。'));
+    const reviewed = analysed.filter((agent) => reviews.has(agent));
+    if (reviewed.length < 2)
+      return void (await notice(
+        '完成交叉审查的参与者不足两位，因此本轮没有生成联合归纳。可以重试未完成的部分，或根据已返回内容继续追问。'
+      ));
+    if (!added && summarized) return;
+    const unreviewed = analysed.filter((agent) => !reviews.has(agent));
+    if (unreviewed.length)
+      await notice(
+        `${participantNames(unreviewed)} 未完成交叉审查，归纳只基于 ${participantNames(reviewed)} 的审查。`
+      );
+    // The moderator summarizes when its own analysis succeeded, else the first participant whose did.
+    const summarizer = analyses.has(moderator) ? moderator : analysed[0];
+    if (summarizer !== moderator)
+      await notice(
+        `主持人 ${providerLabel(moderator)} 未完成独立分析，本轮改由 ${providerLabel(summarizer)} 整理决策结论。`
+      );
+    await perform(
+      summarizer,
+      summaryPrompt(base, {
+        analyses: analysisMaterial,
+        reviews: reviewed.map((agent) => materialOf(reviews.get(agent))),
+        missingAnalyses: unanalysed,
+        missingReviews: unreviewed,
+        moderator: summarizer,
+        standingInFor: summarizer === moderator ? null : moderator
+      }),
+      'summary',
+      'summary'
+    );
+    if (signal.aborted) await notice('讨论已停止，已完成内容保留。');
   } finally {
     clearInterval(heartbeat);
     emit({ type: 'done', roomId: room.id });

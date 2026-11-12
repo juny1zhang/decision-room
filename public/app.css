@@ -792,6 +792,34 @@ button svg {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
+/*
+ * "重试未完成的部分" after the last message of an incomplete turn (messages.js updateResume). The button's
+ * text is 5.5:1 on --green-soft (5.1:1 on its hover background); the hint is --sub.
+ */
+.resume-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: -6px 0 25px;
+}
+.resume-button {
+  border: 1px solid var(--green);
+  background: var(--green-soft);
+  color: var(--green);
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.resume-button:hover {
+  background: #dbe9df;
+}
+.resume-hint {
+  font-size: 11px;
+  color: var(--sub);
+}
+
 /* Collapsible "本轮设置" summary under each question. */
 .turn-settings {
   font-size: 11px;

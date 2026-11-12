@@ -129,7 +129,9 @@ test('server correctness with fake official CLIs', { timeout: 60000 }, async (t)
 
     // The third question was asked with 背景 B; the earlier rounds show the 背景 A they were asked with.
     const prompt = third.calls[0].prompt;
-    assert.ok(prompt.includes('用户的共享背景（可能包含假设）：\n背景 B\n'));
+    assert.ok(
+      prompt.includes('用户的共享背景（可能包含假设）：\n<shared_context>\n背景 B\n</shared_context>')
+    );
     assert.ok(prompt.includes('[共享背景]\n背景 A\n\n[用户 / 问题]\n问题一'));
     assert.ok(prompt.includes('[用户 / 问题]\n问题二'));
     assert.ok(!prompt.includes('[共享背景（本轮更新）]'));

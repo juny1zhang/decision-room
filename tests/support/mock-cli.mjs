@@ -29,11 +29,14 @@ export const MOCK_USAGE = {
 // Local process fixtures. These never contact a model or inspect real credentials.
 //
 // control.json steers them, per provider: auth ('api', 'oauth', 'third_party', 'none'), fail, failure
-// ({ answer, stderr, code }), hang, empty, delayMs (before answering), expiredCatalog (Cursor), and for
-// streaming: noStreamFlags (help without the streaming flags, as an older CLI) and streamDelayMs (the pause
-// before each streamed piece, 20 ms by default). With the flags in its help the app asks Claude and Cursor
-// for stream-json output; Codex always streams its --json events, with item.updated previews unless
-// noStreamFlags is set.
+// ({ answer, stderr, code }), failOnce ({ stderr, code = 1, times = 1, after = 0 }: that provider's model
+// calls after the first `after` fail with `stderr`, `times` of them, and later ones answer; counted in
+// fail-once-<provider>.count), answer (the
+// text of every answer instead of MOCK_<PROVIDER>_RESULT_<n>), hang, empty, delayMs (before answering),
+// expiredCatalog (Cursor), and for streaming: noStreamFlags (help without the streaming flags, as an older
+// CLI) and streamDelayMs (the pause before each streamed piece, 20 ms by default). With the flags in its
+// help the app asks Claude and Cursor for stream-json output; Codex always streams its --json events, with
+// item.updated previews unless noStreamFlags is set.
 export async function runMock(provider, wrapperUrl) {
   const dir = path.dirname(fileURLToPath(wrapperUrl));
   const controlPath = path.join(dir, 'control.json');
@@ -178,7 +181,10 @@ export async function runMock(provider, wrapperUrl) {
   const count = fs.existsSync(logPath)
     ? fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).length
     : 0;
-  const result = `MOCK_${provider.toUpperCase()}_RESULT_${count + 1}`;
+  const result =
+    typeof settings.answer === 'string'
+      ? settings.answer
+      : `MOCK_${provider.toUpperCase()}_RESULT_${count + 1}`;
   const authOverrides = [
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_AUTH_TOKEN',
@@ -227,6 +233,17 @@ export async function runMock(provider, wrapperUrl) {
     process.stderr.write(`MOCK_${provider.toUpperCase()}_FAILURE\n`);
     process.exitCode = 1;
     return;
+  }
+  if (settings.failOnce) {
+    const { stderr = '', code = 1, times = 1, after = 0 } = settings.failOnce;
+    const counter = path.join(dir, `fail-once-${provider}.count`);
+    const number = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0) + 1;
+    fs.writeFileSync(counter, String(number));
+    if (number > after && number <= after + times) {
+      process.stderr.write(stderr + '\n');
+      process.exitCode = code;
+      return;
+    }
   }
   if (settings.failure) {
     // A call that fails after the model wrote `answer` (in the CLI's own output format), with `stderr`.

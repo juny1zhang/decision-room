@@ -546,7 +546,8 @@ test('a failed call stops its preview and stores no measures', async () => {
     onText('一半');
     onText('还在写');
     setTimeout(() => onText('迟到的文字'), 10);
-    throw Object.assign(new Error('连接中断'), { category: 'network' });
+    // Not 'network': that category is retried once (see tests/integration/resilience.test.mjs).
+    throw Object.assign(new Error('连接中断'), { category: 'other' });
   });
   await sleep(200);
   const deltas = events.filter((event) => event.type === 'delta');

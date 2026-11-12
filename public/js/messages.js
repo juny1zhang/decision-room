@@ -1,5 +1,6 @@
 // The conversation pane: message cards, live previews of answers still being written, the per-question
-// "本轮设置" details and keeping the view scrolled to the newest message.
+// "本轮设置" details, the "重试未完成的部分" button of an incomplete turn and keeping the view scrolled to
+// the newest message.
 import { $, element } from './dom.js';
 import { markdown } from './markdown.js';
 import { toast } from './notices.js';
@@ -287,7 +288,85 @@ export function replaceMessages(messages) {
   $('messages').replaceChildren();
   $('emptyState').hidden = messages.length > 0;
   for (const message of messages) appendMessage(message, false);
+  updateResume();
   requestAnimationFrame(toBottom);
+}
+
+/**
+ * The id of the latest question in `messages` when its turn is incomplete and can be resumed, else null.
+ * The question must carry its turnId (older rooms do not) and its configuration; the turn is incomplete
+ * when a participant's analysis is missing or, in a debate, a participant's review, or a summary after all
+ * of them. Mirrors turnProgress and turnComplete in src/discussion.mjs.
+ */
+export function incompleteTurnId(messages) {
+  const at = messages.findLastIndex((message) => message?.role === 'user');
+  const question = messages[at];
+  const config = question?.configuration;
+  if (!question?.id || question.turnId !== question.id || typeof config?.mode !== 'string') return null;
+  const debate = config.mode === 'debate';
+  const team =
+    debate || config.mode === 'both'
+      ? Array.isArray(config.participants)
+        ? config.participants.filter(isProviderId)
+        : []
+      : [config.mode];
+  if (!team.every(isProviderId) || !team.length) return null;
+  const analysed = new Set();
+  const reviewed = new Set();
+  let summaryAt = -1;
+  let answerAt = -1;
+  messages.slice(at + 1).forEach((message, index) => {
+    if (message?.turnId !== question.id) return;
+    if (message.role === 'summary' && message.stage === 'summary') summaryAt = index;
+    else if (team.includes(message.role) && (message.stage === 'analysis' || message.stage === 'review')) {
+      (message.stage === 'analysis' ? analysed : reviewed).add(message.role);
+      answerAt = index;
+    }
+  });
+  const complete =
+    team.every((id) => analysed.has(id)) &&
+    (!debate || (team.every((id) => reviewed.has(id)) && summaryAt > answerAt));
+  return complete ? null : question.id;
+}
+
+/** What the "重试未完成的部分" button does: handler(turnId), set by onResume. */
+let resumeHandler = null;
+
+/** Sets what "重试未完成的部分" does with the id of the turn to resume. */
+export function onResume(handler) {
+  resumeHandler = handler;
+}
+
+/**
+ * Shows "重试未完成的部分" after the last message while the open room's latest turn is incomplete (see
+ * incompleteTurnId) and no discussion runs, and hides it otherwise.
+ */
+export function updateResume() {
+  const running = state.busy || state.serverBusy;
+  const turnId = state.roomId && !running ? incompleteTurnId(state.messages) : null;
+  let bar = $('resumeBar');
+  if (!turnId) {
+    if (bar) bar.hidden = true;
+    return;
+  }
+  const appearing = !bar || bar.hidden;
+  const stick = nearBottom();
+  if (!bar) {
+    bar = element('div', 'resume-bar');
+    bar.id = 'resumeBar';
+    const button = element('button', 'resume-button', '重试未完成的部分');
+    button.type = 'button';
+    button.id = 'resumeButton';
+    button.addEventListener('click', () => resumeHandler?.(bar.dataset.turnId));
+    bar.append(
+      button,
+      element('span', 'resume-hint', '只重新运行这一轮缺少的回答、审查或归纳，已完成的内容保留。')
+    );
+    $('messages').after(bar);
+  }
+  bar.dataset.turnId = turnId;
+  bar.hidden = false;
+  if (appearing) followNewContent(stick);
 }
 
 export function setupMessages() {
