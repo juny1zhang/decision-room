@@ -8,11 +8,23 @@
 //   missingHint   how the CLI is named in the "找不到 …" message when none of the binaries is found.
 //   envDenylist   environment variables removed before any CLI starts (API keys, endpoints, …).
 //   apiKeyEnv     variables that would switch the CLI to API billing; health reports them as ignored.
-//   supportsWeb   web search support reported when the CLI is missing (inspect may report its own).
-//   inspect(ctx)  checks version, login and models. ctx: { bin, run, runtimeDir, signal, cachedCatalog,
-//                 info }. `info` is the provider's health entry, already marked available; inspect fills
+//   supportsWeb   whether the CLI can search the web; health reports it whether or not the CLI is found.
+//   inspect(ctx)  checks version, login and models. ctx: { bin, run, runtimeDir, signal, info, cli,
+//                 remote }. `info` is the provider's health entry, already marked available; inspect fills
 //                 it in or returns an entry of its own. If inspect throws, `info` is reported with the
-//                 error message.
+//                 error message. `signal` belongs to the health checker, not to a discussion. Every check
+//                 runs inspect, and a discussion checks its participants first, so inspect keeps the cost
+//                 low with two memos, and runs independent commands at the same time:
+//                   ctx.cli(check)          for version and help checks, which depend only on the
+//                                           executable. Resolves to check()'s result, reused until the
+//                                           executable changes (path, modification time, size, inode) as
+//                                           long as it has ok: true.
+//                   ctx.remote(key, check)  for model catalogues and other calls to the model service.
+//                                           Resolves to check()'s result, reused for HEALTH_TTL after a
+//                                           result with ok: true while `key` (e.g. the login status
+//                                           output) is the same; "重新检查连接" runs it again.
+//                 Concurrent callers share a check() that is still running. The login status itself is
+//                 read on every inspect, so a discussion always sees the current login method.
 //   invoke(ctx)   answers one prompt. ctx: { bin, run, workDir, signal, prompt, instructions, model,
 //                 reasoning, webSearch, timeout }. Resolves to { text, model }; the caller trims the text
 //                 and rejects empty or overlong answers.

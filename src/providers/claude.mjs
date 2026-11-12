@@ -23,13 +23,21 @@ const CLI_CHECK = {
  * text: it decides whether the CLI can be asked, and supplies the effort levels of the fallback list.
  */
 export async function claudeCatalog(bin, run, help, signal) {
+  return (await readCatalog(bin, run, help, signal)).catalog;
+}
+
+/**
+ * claudeCatalog() as { ok, catalog }: ok is false when the CLI was asked but gave no model list, so the
+ * fallback list is only a stand-in and the question is worth repeating.
+ */
+async function readCatalog(bin, run, help, signal) {
   const effortHelp = help.match(/--effort\s+<[^>]+>[^\n]*(?:\n[ \t]+)?\(([^)]+)\)/i);
   const fallback = {
     models: ['sonnet', 'opus', 'haiku'],
     reasoningLevels: effortLevels(effortHelp?.[1].split(',').map((value) => value.trim())),
     reasoningByModel: {}
   };
-  if (!help.includes('--input-format')) return fallback;
+  if (!help.includes('--input-format')) return { ok: true, catalog: fallback };
   // Claude's SDK initialize response contains the CLI model picker, including exact model IDs.
   const args = [...COMMON_ARGS, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json'];
   args.push('--verbose', '--no-session-persistence', '--tools', '');
@@ -39,7 +47,7 @@ export async function claudeCatalog(bin, run, help, signal) {
     '\n';
   try {
     const result = await run(bin, args, { input, signal, timeout: CATALOG_TIMEOUT });
-    if (result.code !== 0) return fallback;
+    if (result.code !== 0) return { ok: false, catalog: fallback };
     for (const line of result.stdout.trim().split('\n')) {
       let event;
       try {
@@ -64,20 +72,33 @@ export async function claudeCatalog(bin, run, help, signal) {
         }
       }
       if (Object.keys(reasoningByModel).length) {
-        return { models: Object.keys(reasoningByModel), reasoningByModel, reasoningLevels: defaultLevels };
+        const catalog = {
+          models: Object.keys(reasoningByModel),
+          reasoningByModel,
+          reasoningLevels: defaultLevels
+        };
+        return { ok: true, catalog };
       }
     }
   } catch (error) {
     if (signal?.aborted) throw error;
   }
-  return fallback;
+  return { ok: false, catalog: fallback };
 }
 
+// The version and help checks run once per executable; the login status before every discussion; the
+// model catalogue again only when the login status changes or the last one is older than HEALTH_TTL.
 async function inspect(ctx) {
-  const { bin, run, signal, cachedCatalog, info } = ctx;
-  const help = await checkCli(ctx, CLI_CHECK);
-  if (!help) return info;
-  const auth = await run(bin, [...COMMON_ARGS, 'auth', 'status'], { signal });
+  const { bin, run, signal, info } = ctx;
+  const [cli, auth] = await Promise.all([
+    ctx.cli(() => checkCli(run, bin, { ...CLI_CHECK, options: { signal } })),
+    run(bin, [...COMMON_ARGS, 'auth', 'status'], { signal })
+  ]);
+  info.version = cli.version;
+  if (!cli.ok) {
+    info.message = cli.message;
+    return info;
+  }
   let result;
   try {
     result = JSON.parse(auth.stdout);
@@ -87,7 +108,13 @@ async function inspect(ctx) {
   info.message = info.subscription
     ? '已识别 Claude 账号登录'
     : '请执行 claude auth login，使用你的 Claude 订阅账号。';
-  if (info.subscription) Object.assign(info, cachedCatalog || (await claudeCatalog(bin, run, help, signal)));
+  if (!info.subscription) return info;
+  const { catalog } = await ctx.remote(`${auth.code}\n${auth.stdout}`, () =>
+    readCatalog(bin, run, cli.help, signal)
+  );
+  info.models = catalog.models;
+  info.reasoningLevels = catalog.reasoningLevels;
+  info.reasoningByModel = catalog.reasoningByModel;
   return info;
 }
 

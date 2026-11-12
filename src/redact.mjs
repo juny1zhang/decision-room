@@ -10,12 +10,12 @@ export function stripAnsi(text) {
 
 /**
  * Makes CLI or error text safe to display: no colour codes, API keys, bearer or session tokens, JWTs or
- * e-mail addresses, and at most 1200 characters.
+ * e-mail addresses, and at most `limit` characters (1200 unless given).
  */
-export function safeDetail(value) {
+export function safeDetail(value, limit = 1200) {
   return stripAnsi(value || '')
     .replace(/\b(?:sk-|sess-|Bearer\s+)[A-Za-z0-9_./+-]{8,}/gi, '[credential hidden]')
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[token hidden]')
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[account]')
-    .slice(0, 1200);
+    .slice(0, limit);
 }

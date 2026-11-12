@@ -4,7 +4,9 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { classifyFailure, errorText, failureError } from '../diagnostics.mjs';
+import { systemCaEnv } from '../process.mjs';
 import { stripAnsi } from '../redact.mjs';
+import { checkCli } from './common.mjs';
 
 const credentialStores = new Map();
 const authenticationError =
@@ -15,15 +17,12 @@ const usageLimit = /rate.?limit|quota|usage.?limit|out of credits|resource.?exha
 const modelUnavailable =
   /model.{0,80}(invalid|unavailable|not found|not available|unknown)|cannot use this model|unknown model/i;
 // `agent --help` must list these flags, which every call relies on.
-const REQUIRED_FLAGS = [
-  '--print',
-  '--trust',
-  '--mode',
-  '--sandbox',
-  '--workspace',
-  '--model',
-  '--output-format'
-];
+const CLI_CHECK = {
+  id: 'cursor',
+  helpArgs: ['--help'],
+  requiredFlags: ['--print', '--trust', '--mode', '--sandbox', '--workspace', '--model', '--output-format'],
+  outdated: '当前 Cursor Agent CLI 缺少只读模式或所需参数。请更新后重试。'
+};
 
 function credentialFile(env, home) {
   if (process.platform === 'darwin') return path.join(home, '.cursor', 'auth.json');
@@ -51,7 +50,8 @@ async function withCursorWorkspace(runtimeDir, webSearch, callback) {
       CURSOR_DATA_DIR: config,
       NO_OPEN_BROWSER: '1',
       DIRENV_DISABLE: '1',
-      NODE_USE_SYSTEM_CA: '1'
+      // Trust the system certificates, unless NODE_OPTIONS already chose a CA store.
+      ...systemCaEnv()
     };
     await fs.mkdir(workspace, { mode: 0o700 });
     await fs.mkdir(config, { recursive: true, mode: 0o700 });
@@ -97,25 +97,38 @@ export function parseModelList(output) {
   return [...models];
 }
 
-async function inspectLogin(bin, run, { cwd, env }, signal) {
-  const options = { cwd, env, signal, timeout: 12000 };
-  const status = await run(bin, ['status', '--format', 'json'], options);
+/** `agent status`: { result, loggedIn }, whether the CLI holds a login before the model service is asked. */
+async function readStatus(bin, run, options) {
+  const result = await run(bin, ['status', '--format', 'json'], options);
   let account;
   try {
-    account = JSON.parse(status.stdout);
+    account = JSON.parse(result.stdout);
   } catch {}
-  if (status.code !== 0 || account?.isAuthenticated !== true || account.hasAccessToken !== true) {
+  return {
+    result,
+    loggedIn: result.code === 0 && account?.isAuthenticated === true && account.hasAccessToken === true
+  };
+}
+
+/**
+ * Confirms a login `agent status` reported with the model service: `agent models` fails with an
+ * authentication error when the login is stale, and otherwise lists the models. ok tells whether the
+ * result can be reused (the login works and the model list was read).
+ */
+async function validateLogin(bin, run, options, loggedIn) {
+  if (!loggedIn) {
     return {
+      ok: false,
       authenticated: false,
       subscription: false,
       models: [],
       message: '请在终端运行 agent login 登录 Cursor，再重新检查。'
     };
   }
-
   const result = await run(bin, ['models'], options);
   if (result.code !== 0 && authenticationError.test(result.stderr + result.stdout)) {
     return {
+      ok: false,
       authenticated: false,
       subscription: false,
       models: [],
@@ -123,6 +136,7 @@ async function inspectLogin(bin, run, { cwd, env }, signal) {
     };
   }
   return {
+    ok: result.code === 0,
     authenticated: true,
     subscription: true,
     models: result.code === 0 ? parseModelList(result.stdout) : [],
@@ -130,56 +144,60 @@ async function inspectLogin(bin, run, { cwd, env }, signal) {
   };
 }
 
-// Cursor reads its model list on every check: ctx.cachedCatalog is not used.
-async function inspect({ bin, run, runtimeDir, signal }) {
-  const info = {
-    available: true,
-    version: '',
-    authenticated: false,
-    subscription: false,
-    models: [],
-    reasoningLevels: [],
-    supportsWeb: true,
-    message: ''
-  };
+// The version and help checks run once per executable and `agent status` before every discussion.
+// `agent models`, which also proves the login works with the model service, runs again only when the
+// status output changes or the last successful run is older than HEALTH_TTL.
+async function inspect(ctx) {
+  const { bin, run, runtimeDir, signal, info } = ctx;
   try {
     return await withCursorWorkspace(runtimeDir, false, async (workspace) => {
-      const options = { cwd: workspace.cwd, env: workspace.env, signal };
-      const [version, help] = await Promise.all([
-        run(bin, ['--version'], options),
-        run(bin, ['--help'], options)
-      ]);
-      info.version = version.stdout.trim().split('\n')[0].slice(0, 100);
-      if (
-        version.code !== 0 ||
-        help.code !== 0 ||
-        REQUIRED_FLAGS.some((flag) => !help.stdout.includes(flag))
-      ) {
-        return { ...info, message: '当前 Cursor Agent CLI 缺少只读模式或所需参数。请更新后重试。' };
-      }
       const configuredStore = process.env.AGENT_CLI_CREDENTIAL_STORE;
       let store = configuredStore || credentialStores.get(bin);
-      if (store) workspace.env.AGENT_CLI_CREDENTIAL_STORE = store;
-      let login = await inspectLogin(bin, run, workspace, signal);
-      if (
-        !login.authenticated &&
-        !configuredStore &&
-        workspace.hasLoginFile &&
-        process.platform === 'darwin'
-      ) {
-        // macOS can have a stale Keychain login and a valid CLI file-store login, or vice versa.
-        store = store === 'file' ? undefined : 'file';
-        if (store) workspace.env.AGENT_CLI_CREDENTIAL_STORE = store;
+      const useStore = (value) => {
+        if (value) workspace.env.AGENT_CLI_CREDENTIAL_STORE = value;
         else delete workspace.env.AGENT_CLI_CREDENTIAL_STORE;
-        login = await inspectLogin(bin, run, workspace, signal);
+      };
+      useStore(store);
+      const options = { cwd: workspace.cwd, env: workspace.env, signal, timeout: 12000 };
+      const cliOptions = { cwd: workspace.cwd, env: { ...workspace.env }, signal };
+      const [cli, status] = await Promise.all([
+        ctx.cli(() => checkCli(run, bin, { ...CLI_CHECK, options: cliOptions })),
+        readStatus(bin, run, options)
+      ]);
+      info.version = cli.version;
+      if (!cli.ok) {
+        info.message = cli.message;
+        return info;
       }
-      if (login.subscription) credentialStores.set(bin, store);
-      else credentialStores.delete(bin);
-      return { ...info, ...login };
+      const statusKey = `${store || ''}\n${status.result.code}\n${status.result.stdout}`;
+      const login = await ctx.remote(statusKey, async () => {
+        let validated = await validateLogin(bin, run, options, status.loggedIn);
+        if (
+          !validated.authenticated &&
+          !configuredStore &&
+          workspace.hasLoginFile &&
+          process.platform === 'darwin'
+        ) {
+          // macOS can have a stale Keychain login and a valid CLI file-store login, or vice versa.
+          store = store === 'file' ? undefined : 'file';
+          useStore(store);
+          const retry = await readStatus(bin, run, options);
+          validated = await validateLogin(bin, run, options, retry.loggedIn);
+        }
+        if (validated.subscription) credentialStores.set(bin, store);
+        else credentialStores.delete(bin);
+        return validated;
+      });
+      info.authenticated = login.authenticated;
+      info.subscription = login.subscription;
+      info.models = login.models;
+      info.message = login.message;
+      return info;
     });
   } catch (error) {
     if (signal?.aborted) throw error;
-    return { ...info, message: 'Cursor 连接检查失败。请检查网络和终端里的 agent status 后重试。' };
+    info.message = 'Cursor 连接检查失败。请检查网络和终端里的 agent status 后重试。';
+    return info;
   }
 }
 
@@ -261,8 +279,7 @@ export default {
     'CURSOR_AGENT_CLI_LOCAL_MODE'
   ],
   apiKeyEnv: ['CURSOR_API_KEY'],
-  // Reported while the CLI is missing; once it is found, inspect() reports supportsWeb: true.
-  supportsWeb: false,
+  supportsWeb: true,
   inspect,
   invoke
 };

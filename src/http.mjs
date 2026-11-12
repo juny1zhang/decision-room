@@ -2,10 +2,11 @@
 import { timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { MAX_BODY, PUBLIC_DIR } from './config.mjs';
+import { MAX_BODY, MAX_DISCARD, PUBLIC_DIR } from './config.mjs';
 import { runDiscussion } from './discussion.mjs';
 import { AppError } from './errors.mjs';
 import { exportRoom } from './export.mjs';
+import { readPreferencePatch } from './preferences.mjs';
 import { safeDetail } from './redact.mjs';
 
 const CONTENT_SECURITY_POLICY =
@@ -20,6 +21,8 @@ const STATIC_TYPES = {
   '.png': 'image/png'
 };
 const INDEX = { file: 'index.html', type: 'text/html; charset=utf-8' };
+const NOT_FOUND = '未找到该操作。';
+const UNAUTHORIZED = '访问凭证无效。请使用终端打印的完整地址重新打开。';
 
 export function json(response, status, body) {
   if (response.destroyed) return;
@@ -27,24 +30,59 @@ export function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-/** Reads a JSON object request body of at most MAX_BODY bytes. */
-export async function readBody(request) {
-  if (!String(request.headers['content-type'] || '').startsWith('application/json'))
-    throw new AppError('请使用 JSON 请求。', 415);
-  let size = 0;
-  const chunks = [];
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > MAX_BODY) throw new AppError('提交内容过大。', 413);
-    chunks.push(chunk);
+/** Answers with an error's message and status (500 unless it is an AppError). */
+function fail(response, error) {
+  if (response.headersSent) {
+    if (!response.writableEnded) response.end();
+    return;
   }
-  try {
-    const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error();
-    return data;
-  } catch {
-    throw new AppError('请求格式无效。');
-  }
+  if (error.closeConnection) response.setHeader('Connection', 'close');
+  json(response, error.status || 500, { error: safeDetail(error.message) });
+}
+
+/**
+ * Reads a JSON object request body of at most MAX_BODY bytes. A larger body is still read to its end and
+ * discarded, up to MAX_DISCARD bytes, so the client is listening when the 413 answer comes; beyond that
+ * the error asks for the connection to be closed after the answer (error.closeConnection).
+ */
+export function readBody(request) {
+  return new Promise((resolve, reject) => {
+    if (!String(request.headers['content-type'] || '').startsWith('application/json')) {
+      reject(new AppError('请使用 JSON 请求。', 415));
+      return;
+    }
+    const tooLarge = (closeConnection) => {
+      const error = new AppError('提交内容过大。', 413);
+      error.closeConnection = closeConnection;
+      return error;
+    };
+    if (Number(request.headers['content-length']) > MAX_DISCARD) {
+      reject(tooLarge(true));
+      return;
+    }
+    let size = 0;
+    const chunks = [];
+    const onData = (chunk) => {
+      size += chunk.length;
+      if (size <= MAX_BODY) chunks.push(chunk);
+      else if (size > MAX_DISCARD) {
+        request.off('data', onData);
+        reject(tooLarge(true));
+      }
+    };
+    request.on('data', onData);
+    request.on('error', reject);
+    request.on('end', () => {
+      if (size > MAX_BODY) return reject(tooLarge(false));
+      try {
+        const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error();
+        resolve(data);
+      } catch {
+        reject(new AppError('请求格式无效。'));
+      }
+    });
+  });
 }
 
 /** Whether the request carries this session's access token. */
@@ -97,11 +135,24 @@ export async function readStaticFile(publicDir, pathname) {
   }
 }
 
+/** A request target fit for a log line: no control characters, no access token, at most 200 characters. */
+function loggedTarget(target) {
+  return (
+    String(target)
+      // eslint-disable-next-line no-control-regex -- removes control characters a client may send.
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+      .replace(/[a-f0-9]{64}/gi, '[token]')
+      .slice(0, 200)
+  );
+}
+
 /**
  * The server's request listener. Only http://127.0.0.1:<port> and http://localhost:<port> are accepted as
- * host and origin. The UI (GET outside /api/) is public; every /api/ route needs `token`.
- * deps: health (health checker), invoke (see invoke.mjs), rooms (room store), activeRun (see discussion.mjs),
- * getPort() (the listening port), publicDir (UI files, default <repo>/public).
+ * host and origin (403 otherwise). GET outside /api/ serves the UI without a token; any other path outside
+ * /api/ is a JSON 404. Every /api/ route needs `token` (401 otherwise).
+ * deps: health (health checker), invoke (see invoke.mjs), rooms (room store), preferences (see
+ * preferences.mjs), activeRun (see discussion.mjs), getPort() (the listening port), publicDir (UI files,
+ * default <repo>/public), debug(line) (optional: receives method, path, status and duration per request).
  */
 export function createRequestHandler({
   token,
@@ -109,8 +160,10 @@ export function createRequestHandler({
   health,
   invoke,
   rooms,
+  preferences,
   activeRun,
-  publicDir = PUBLIC_DIR
+  publicDir = PUBLIC_DIR,
+  debug
 }) {
   async function run(request, response) {
     if (activeRun.isBusy()) throw new AppError('已有讨论正在进行，请等待或停止当前讨论。', 409);
@@ -124,7 +177,7 @@ export function createRequestHandler({
     try {
       await runDiscussion(body, response, controller.signal, { health, invoke, rooms });
     } catch (e) {
-      if (!response.headersSent) json(response, e.status || 500, { error: safeDetail(e.message) });
+      if (!response.headersSent) fail(response, e);
       else if (!response.destroyed)
         response.write(JSON.stringify({ type: 'error', message: safeDetail(e.message) }) + '\n');
     } finally {
@@ -132,6 +185,53 @@ export function createRequestHandler({
       activeRun.end(controller);
       if (!response.writableEnded && !response.destroyed) response.end();
     }
+  }
+
+  async function serveStatic(request, response, pathname) {
+    if (request.method === 'GET' && pathname === '/favicon.ico') {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+    const file = request.method === 'GET' ? await readStaticFile(publicDir, pathname) : null;
+    if (!file) return json(response, 404, { error: NOT_FOUND });
+    response.writeHead(200, { 'Content-Type': file.type });
+    response.end(file.body);
+  }
+
+  async function api(request, response, url) {
+    const { pathname } = url;
+    const method = request.method;
+    if (pathname === '/api/health' && method === 'GET')
+      return json(
+        response,
+        200,
+        await health.check(url.searchParams.get('refresh') === '1' ? 'full' : 'cached')
+      );
+    if (pathname === '/api/preferences' && method === 'GET')
+      return json(response, 200, await preferences.read());
+    if (pathname === '/api/preferences' && method === 'PUT') {
+      await preferences.update(readPreferencePatch(await readBody(request)));
+      return json(response, 200, { ok: true });
+    }
+    if (pathname === '/api/rooms' && method === 'GET')
+      return json(response, 200, { rooms: await rooms.list() });
+    const match = pathname.match(/^\/api\/rooms\/([a-f0-9-]{36})(\/export)?$/);
+    if (match && method === 'GET') {
+      const room = await rooms.load(match[1]);
+      if (match[2]) {
+        response.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+        response.end(exportRoom(room));
+        return;
+      }
+      return json(response, 200, room);
+    }
+    if (pathname === '/api/cancel' && method === 'POST') {
+      activeRun.abort();
+      return json(response, 200, { ok: true });
+    }
+    if (pathname === '/api/run' && method === 'POST') return run(request, response);
+    json(response, 404, { error: NOT_FOUND });
   }
 
   async function handle(request, response) {
@@ -144,46 +244,27 @@ export function createRequestHandler({
     if (!allowedHosts.includes(request.headers.host)) return json(response, 403, { error: 'Invalid host' });
     if (request.headers.origin && !allowedHosts.map((h) => `http://${h}`).includes(request.headers.origin))
       return json(response, 403, { error: 'Invalid origin' });
-    const url = new URL(request.url, `http://127.0.0.1:${port}`);
-    if (url.pathname === '/favicon.ico') {
-      response.writeHead(204);
-      response.end();
-      return;
+    let url;
+    try {
+      url = new URL(request.url, `http://127.0.0.1:${port}`);
+    } catch {
+      return json(response, 404, { error: NOT_FOUND });
     }
-    if (request.method === 'GET' && !url.pathname.startsWith('/api/')) {
-      const file = await readStaticFile(publicDir, url.pathname);
-      if (!file) return json(response, 404, { error: '未找到该操作。' });
-      response.writeHead(200, { 'Content-Type': file.type });
-      response.end(file.body);
-      return;
-    }
-    if (!url.pathname.startsWith('/api/') || !isAuthorized(request, token))
-      return json(response, 403, { error: '访问凭证无效。请使用终端打印的完整地址重新打开。' });
-    if (url.pathname === '/api/health' && request.method === 'GET')
-      return json(response, 200, await health.check(url.searchParams.get('refresh') === '1'));
-    if (url.pathname === '/api/rooms' && request.method === 'GET')
-      return json(response, 200, { rooms: await rooms.list() });
-    const match = url.pathname.match(/^\/api\/rooms\/([a-f0-9-]{36})(\/export)?$/);
-    if (match && request.method === 'GET') {
-      const room = await rooms.load(match[1]);
-      if (match[2]) {
-        response.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
-        response.end(exportRoom(room));
-        return;
-      }
-      return json(response, 200, room);
-    }
-    if (url.pathname === '/api/cancel' && request.method === 'POST') {
-      activeRun.abort();
-      return json(response, 200, { ok: true });
-    }
-    if (url.pathname === '/api/run' && request.method === 'POST') return run(request, response);
-    json(response, 404, { error: '未找到该操作。' });
+    if (!url.pathname.startsWith('/api/')) return serveStatic(request, response, url.pathname);
+    if (!isAuthorized(request, token)) return json(response, 401, { error: UNAUTHORIZED });
+    return api(request, response, url);
   }
 
-  return (request, response) =>
-    handle(request, response).catch((e) => {
-      if (!response.headersSent) json(response, e.status || 500, { error: safeDetail(e.message) });
-      else response.end();
-    });
+  return (request, response) => {
+    if (debug) {
+      const startedAt = Date.now();
+      response.once('close', () =>
+        debug(
+          `http ${request.method} ${loggedTarget(request.url)} ${response.statusCode} ${Date.now() - startedAt} ms` +
+            (response.writableFinished ? '' : ' (connection closed early)')
+        )
+      );
+    }
+    handle(request, response).catch((e) => fail(response, e));
+  };
 }

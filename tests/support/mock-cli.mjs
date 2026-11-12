@@ -9,6 +9,11 @@ export async function runMock(provider, wrapperUrl) {
   const control = fs.existsSync(controlPath) ? JSON.parse(fs.readFileSync(controlPath, 'utf8')) : {};
   const args = process.argv.slice(2);
   const settings = control[provider] || {};
+  // Every invocation, checks included, so tests can count the processes a step starts.
+  fs.appendFileSync(
+    path.join(dir, 'spawns.ndjson'),
+    JSON.stringify({ provider, args, time: Date.now() }) + '\n'
+  );
   if (args.includes('--version') || args.includes('-V')) {
     const versions = {
       codex: 'codex-cli 0.167.0',

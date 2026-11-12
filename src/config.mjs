@@ -1,15 +1,19 @@
 // Paths, limits and the version shared by the server modules. Reading this module has no side effects.
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const VERSION = '1.1.0';
-
 /** The repository folder that holds server.mjs. */
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/** The version in package.json, its single source. */
+export const VERSION = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 /** Browser UI files served by the HTTP handler. */
 export const PUBLIC_DIR = path.join(ROOT, 'public');
-export const DATA_DIR = path.resolve(process.env.DECISION_ROOM_DATA_DIR || path.join(ROOT, 'data'));
-export const ROOMS_DIR = path.join(DATA_DIR, 'rooms');
+/**
+ * Port tried when DECISION_ROOM_PORT is not set. A fixed port keeps the page's address, and with it the
+ * drafts the browser saved for that address, the same from one launch to the next.
+ */
+export const DEFAULT_PORT = 41710;
 
 // Model CLI processes
 /** Longest wait for one model answer. */
@@ -24,7 +28,10 @@ export const OUTPUT_LIMIT = 2 * 1024 * 1024;
 export const STDERR_LIMIT = 16000;
 /** Characters accepted in one model answer. */
 export const MAX_REPLY = 64000;
-/** How long a health check result is reused. */
+/**
+ * How long a health check result is reused, and how long a successful model catalogue or other remote check
+ * stays valid while the login state is unchanged.
+ */
 export const HEALTH_TTL = 180000;
 
 // Discussions
@@ -41,4 +48,9 @@ export const HEARTBEAT_INTERVAL = 15000;
 // HTTP
 /** Bytes accepted in a JSON request body. */
 export const MAX_BODY = 300000;
+/**
+ * Bytes of an oversized body read and discarded so the client receives the 413 answer intact. Beyond this the
+ * answer is sent at once and the connection is closed.
+ */
+export const MAX_DISCARD = 16 * 1024 * 1024;
 export const ROOM_ID_PATTERN = /^[a-f0-9-]{36}$/;

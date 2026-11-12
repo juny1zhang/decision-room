@@ -3,8 +3,17 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { childEnv, createRunner, findExecutable } from '../../src/process.mjs';
-import { CHILD_ENV_DENYLIST } from '../../src/providers/index.mjs';
+import {
+  childEnv,
+  createRunner,
+  executableIdentity,
+  findExecutable,
+  formatDuration,
+  runProcess,
+  selectsCaStore,
+  systemCaEnv
+} from '../../src/process.mjs';
+import { CHILD_ENV_DENYLIST, getProvider } from '../../src/providers/index.mjs';
 
 // Every variable server.mjs removed from CLI environments before the provider registry existed.
 const ORIGINAL_DENYLIST = [
@@ -104,4 +113,127 @@ test('findExecutable prefers DECISION_ROOM_<ID>_BIN, then searches the binaries 
     null,
     'An override is never replaced by a PATH search'
   );
+});
+
+test('a timeout is worded from the actual limit', async () => {
+  assert.equal(formatDuration(6500), '6.5 秒');
+  assert.equal(formatDuration(20000), '20 秒');
+  assert.equal(formatDuration(12000), '12 秒');
+  assert.equal(formatDuration(12 * 60 * 1000), '12 分钟');
+  assert.equal(formatDuration(90000), '1.5 分钟');
+  await assert.rejects(
+    runProcess(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { timeout: 300 }),
+    (error) => {
+      assert.equal(error.message, '等待超过 0.3 秒，已停止调用。请稍后重试。');
+      return true;
+    }
+  );
+});
+
+test('NODE_USE_SYSTEM_CA is only set when NODE_OPTIONS picks no CA store', () => {
+  for (const options of [
+    undefined,
+    '',
+    '--max-old-space-size=4096',
+    '--use-openssl-cache',
+    '--trace-warnings'
+  ])
+    assert.deepEqual(systemCaEnv({ NODE_OPTIONS: options }), { NODE_USE_SYSTEM_CA: '1' }, String(options));
+  for (const options of [
+    '--use-openssl-ca',
+    '--use-bundled-ca',
+    '--use-system-ca',
+    '--max-old-space-size=4096 --use-openssl-ca',
+    '--use-bundled-ca --trace-warnings',
+    '  --use-openssl-ca  '
+  ]) {
+    assert.equal(selectsCaStore(options), true, options);
+    assert.deepEqual(systemCaEnv({ NODE_OPTIONS: options }), {}, options);
+  }
+  assert.equal(selectsCaStore('--use-openssl-ca-file=/x'), false);
+});
+
+test('Cursor runs with NODE_USE_SYSTEM_CA only when NODE_OPTIONS picks no CA store', async (t) => {
+  const dir = await tempDir(t);
+  const saved = process.env.NODE_OPTIONS;
+  t.after(() => {
+    if (saved === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = saved;
+  });
+  const cursor = getProvider('cursor');
+  const seen = [];
+  const run = async (bin, args, options) => {
+    seen.push({ args, env: options.env });
+    return { code: 1, stdout: '', stderr: '' };
+  };
+  const ctx = (cli) => ({
+    bin: '/bin/agent',
+    run,
+    runtimeDir: dir,
+    info: { available: true, version: '', models: [] },
+    cli: (check) => check(),
+    remote: (key, check) => check(),
+    ...cli
+  });
+  for (const [options, expected] of [
+    ['--use-openssl-ca', undefined],
+    ['--use-bundled-ca --max-old-space-size=4096', undefined],
+    ['--max-old-space-size=4096', '1']
+  ]) {
+    process.env.NODE_OPTIONS = options;
+    seen.length = 0;
+    await cursor.inspect(ctx());
+    assert.ok(seen.length > 0);
+    for (const call of seen) assert.equal(call.env.NODE_USE_SYSTEM_CA, expected, `${options}: ${call.args}`);
+  }
+});
+
+test('the executable identity follows links and changes when the file changes', async (t) => {
+  const dir = await tempDir(t);
+  const file = path.join(dir, 'cli');
+  await fs.writeFile(file, 'version 1', { mode: 0o700 });
+  await fs.symlink(file, path.join(dir, 'link'));
+  const first = await executableIdentity(file);
+  assert.ok(first);
+  assert.equal(await executableIdentity(path.join(dir, 'link')), first, 'A link has its target identity');
+  assert.equal(await executableIdentity(file), first, 'Unchanged files keep their identity');
+  await fs.appendFile(file, ' and 2');
+  const resized = await executableIdentity(file);
+  assert.notEqual(resized, first);
+  const replacement = path.join(dir, 'cli.new');
+  await fs.writeFile(replacement, 'version 1 and 2', { mode: 0o700 });
+  await fs.utimes(replacement, (await fs.stat(file)).atime, (await fs.stat(file)).mtime);
+  await fs.rename(replacement, file);
+  assert.notEqual(await executableIdentity(file), resized, 'A replaced file (new inode) is a new identity');
+  assert.equal(await executableIdentity(path.join(dir, 'missing')), null);
+});
+
+test('debug lines report the process without its input or output', async (t) => {
+  const cwd = await tempDir(t);
+  const lines = [];
+  const run = createRunner({ cwd, denylist: [], debug: (line) => lines.push(line), label: () => 'mock' });
+  const script =
+    "process.stdin.resume(); process.stdin.on('end', () => { process.stdout.write('SECRET_' + 'ANSWER');" +
+    " process.stderr.write('warning for user@example.com\\nsecond line'); process.exitCode = 3; });";
+  const result = await run(process.execPath, ['-e', script, '--', '--flag', 'x'.repeat(500)], {
+    input: 'PRIVATE_PROMPT'
+  });
+  assert.equal(result.code, 3);
+  assert.equal(lines.length, 1);
+  const [line] = lines;
+  assert.ok(line.startsWith(`cli mock ${process.execPath} [`), line);
+  assert.ok(line.includes(`cwd=${cwd}`) && line.includes('exit=3') && /\d+ ms/.test(line), line);
+  assert.ok(
+    line.includes('"--flag"') && line.includes('x'.repeat(159) + '…'),
+    'Long arguments are shortened'
+  );
+  assert.ok(line.includes('stderr="warning for [account]\\nsecond line"'), line);
+  assert.ok(!line.includes('PRIVATE_PROMPT') && !line.includes('SECRET_ANSWER'));
+  assert.ok(!line.includes('\n'), 'One line per process');
+
+  lines.length = 0;
+  await assert.rejects(run(path.join(cwd, 'missing-cli'), ['--version']));
+  assert.match(lines[0], /^cli mock .*missing-cli \["--version"\] .* exit=- \d+ ms error=".*ENOENT/);
+  const quiet = createRunner({ cwd, denylist: [] });
+  assert.equal((await quiet(process.execPath, ['-e', ''])).code, 0, 'Without debug nothing is reported');
 });

@@ -31,24 +31,41 @@ export async function codexCatalog(bin, run, signal) {
   return { models: Object.keys(reasoningByModel), reasoningByModel, reasoningLevels: common };
 }
 
+// The version and help checks run once per executable; the login status before every discussion; the
+// model catalogue again only when the login status changes or the last one is older than HEALTH_TTL.
 async function inspect(ctx) {
-  const { bin, run, signal, cachedCatalog, info } = ctx;
-  if (!(await checkCli(ctx, CLI_CHECK))) return info;
-  const auth = await run(bin, ['login', 'status'], { signal });
+  const { bin, run, signal, info } = ctx;
+  const [cli, auth] = await Promise.all([
+    ctx.cli(() => checkCli(run, bin, { ...CLI_CHECK, options: { signal } })),
+    run(bin, ['login', 'status'], { signal })
+  ]);
+  info.version = cli.version;
+  if (!cli.ok) {
+    info.message = cli.message;
+    return info;
+  }
   const text = `${auth.stdout}\n${auth.stderr}`;
   info.authenticated = auth.code === 0;
   info.subscription = auth.code === 0 && /chatgpt/i.test(text) && !/using.{0,20}api.?key/i.test(text);
   info.message = info.subscription
     ? '已识别 ChatGPT 登录'
     : '请执行 codex login，选择 Sign in with ChatGPT。';
-  if (info.subscription) {
+  if (!info.subscription) return info;
+  const catalog = await ctx.remote(`${auth.code}\n${text}`, async () => {
     try {
-      Object.assign(info, cachedCatalog || (await codexCatalog(bin, run, signal)));
+      return { ok: true, ...(await codexCatalog(bin, run, signal)) };
     } catch (error) {
       if (signal?.aborted) throw error;
-      info.reasoningLevels = ['low', 'medium', 'high'];
-      info.message += '。模型目录暂不可用，可选默认模型或输入模型 ID。';
+      return { ok: false };
     }
+  });
+  if (catalog.ok) {
+    info.models = catalog.models;
+    info.reasoningLevels = catalog.reasoningLevels;
+    info.reasoningByModel = catalog.reasoningByModel;
+  } else {
+    info.reasoningLevels = ['low', 'medium', 'high'];
+    info.message += '。模型目录暂不可用，可选默认模型或输入模型 ID。';
   }
   return info;
 }
