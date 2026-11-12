@@ -1,7 +1,7 @@
 // Claude Code adapter: claude.ai login and model checks, and one tool-restricted `claude -p` turn per answer.
 import { CATALOG_TIMEOUT } from '../config.mjs';
 import { classifyFailure, failureError } from '../diagnostics.mjs';
-import { checkCli, effortLevels, isModelId } from './common.mjs';
+import { checkCli, effortLevels, isModelId, listsFlag } from './common.mjs';
 
 // Every call ignores user, project and local settings and hooks, and requires a claude.ai login.
 const COMMON_ARGS = [
@@ -11,12 +11,54 @@ const COMMON_ARGS = [
   '--settings',
   JSON.stringify({ forceLoginMethod: 'claudeai', disableAllHooks: true })
 ];
-// `claude --help` must list these flags, which every call relies on.
-const CLI_CHECK = {
-  id: 'claude',
-  helpArgs: ['--help'],
-  requiredFlags: ['--safe-mode', '--tools', '--output-format']
+/** What this adapter expects of the Claude Code CLI (the format is described in common.mjs). */
+export const contract = {
+  versionArgs: ['--version'],
+  helpChecks: [
+    {
+      args: ['--help'],
+      flags: [
+        // Every call, the login status included
+        '--safe-mode',
+        '--setting-sources',
+        '--settings',
+        // Answers and the model catalogue
+        '-p',
+        '--output-format',
+        '--no-session-persistence',
+        '--strict-mcp-config',
+        '--mcp-config',
+        '--tools',
+        // Answers only
+        '--disable-slash-commands',
+        '--no-chrome',
+        '--permission-mode',
+        '--disallowedTools',
+        '--append-system-prompt',
+        '--model',
+        '--effort',
+        '--allowedTools',
+        // The model catalogue only, which is asked when the help lists --input-format
+        '--input-format',
+        '--verbose'
+      ],
+      // Every answer relies on these.
+      required: ['--safe-mode', '--tools', '--output-format']
+    }
+  ],
+  // Accepted, but left out of --help (checked in the Claude Code 2.1.322 binary).
+  hiddenFlags: ['--max-turns']
 };
+
+/**
+ * The levels `claude --help` lists for --effort, lowest first, such as ["low", "medium", "high"] from
+ * "--effort <level>  Effort level for the current session (low, medium, high)"; the list may start on the
+ * next line. Unknown levels are left out.
+ */
+export function claudeEffortLevels(help) {
+  const match = help.match(/--effort\s+<[^>]+>[^\n]*(?:\n[ \t]+)?\(([^)]+)\)/i);
+  return effortLevels(match?.[1].split(',').map((value) => value.trim()));
+}
 
 /**
  * Lists the models the CLI offers and their effort levels. Sends no prompt. `help` is the `claude --help`
@@ -31,13 +73,12 @@ export async function claudeCatalog(bin, run, help, signal) {
  * fallback list is only a stand-in and the question is worth repeating.
  */
 async function readCatalog(bin, run, help, signal) {
-  const effortHelp = help.match(/--effort\s+<[^>]+>[^\n]*(?:\n[ \t]+)?\(([^)]+)\)/i);
   const fallback = {
     models: ['sonnet', 'opus', 'haiku'],
-    reasoningLevels: effortLevels(effortHelp?.[1].split(',').map((value) => value.trim())),
+    reasoningLevels: claudeEffortLevels(help),
     reasoningByModel: {}
   };
-  if (!help.includes('--input-format')) return { ok: true, catalog: fallback };
+  if (!listsFlag(help, '--input-format')) return { ok: true, catalog: fallback };
   // Claude's SDK initialize response contains the CLI model picker, including exact model IDs.
   const args = [...COMMON_ARGS, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json'];
   args.push('--verbose', '--no-session-persistence', '--tools', '');
@@ -91,7 +132,7 @@ async function readCatalog(bin, run, help, signal) {
 async function inspect(ctx) {
   const { bin, run, signal, info } = ctx;
   const [cli, auth] = await Promise.all([
-    ctx.cli(() => checkCli(run, bin, { ...CLI_CHECK, options: { signal } })),
+    ctx.cli(() => checkCli(run, bin, { id: 'claude', contract, options: { signal } })),
     run(bin, [...COMMON_ARGS, 'auth', 'status'], { signal })
   ]);
   info.version = cli.version;
@@ -196,6 +237,7 @@ export default {
   ],
   apiKeyEnv: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   supportsWeb: true,
+  contract,
   inspect,
   invoke
 };

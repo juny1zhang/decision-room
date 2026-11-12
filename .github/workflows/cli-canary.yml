@@ -1,0 +1,56 @@
+# The tests use mock CLIs that encode what the maintainers expect of the real ones, so a change in an official
+# CLI keeps them green. Once a week this workflow installs the latest releases and checks them against the
+# adapters' contracts with scripts/check-cli-contract.mjs. It runs only version and help commands and
+# `codex debug models`: no login, no prompt and no secrets.
+name: CLI canary
+
+on:
+  schedule:
+    - cron: '17 6 * * 1' # Mondays at 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-canary
+  cancel-in-progress: false
+
+jobs:
+  codex-claude:
+    name: Codex and Claude Code (latest)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install the latest Codex and Claude Code
+        run: npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest
+      - name: Check the CLIs against the contract
+        run: node scripts/check-cli-contract.mjs codex claude
+
+  cursor:
+    name: Cursor Agent (latest)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # This path could not be verified from the development sandbox, where the Cursor installer is blocked,
+    # and no captured Cursor output backs its contract yet (see tests/fixtures/cli/README.md). Until a run
+    # here has passed, a failure is reported without failing the workflow.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install the latest Cursor Agent
+        run: curl https://cursor.com/install -fsS | bash
+      - name: Check the CLI against the contract
+        run: node scripts/check-cli-contract.mjs cursor

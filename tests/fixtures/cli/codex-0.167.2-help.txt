@@ -1,0 +1,12 @@
+Usage: codex [OPTIONS] [PROMPT]
+
+  -c, --config <key=value>
+          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.
+          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed
+          as TOML. If it fails to parse as TOML, the raw string is used as a literal.
+      --disable <FEATURE>
+          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`
+  -a, --ask-for-approval <APPROVAL_POLICY>
+          Configure when the model requires human approval before executing a command
+      --no-daemon
+          Run without the shared background server, even if it is already running

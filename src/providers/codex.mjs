@@ -5,11 +5,32 @@ import { CATALOG_TIMEOUT } from '../config.mjs';
 import { classifyFailure, errorText, failureError } from '../diagnostics.mjs';
 import { checkCli, EFFORT_ORDER, effortLevels, isModelId } from './common.mjs';
 
-// `codex exec --help` must list these flags, which every turn relies on.
-const CLI_CHECK = {
-  id: 'codex',
-  helpArgs: ['exec', '--help'],
-  requiredFlags: ['--ignore-user-config', '--ephemeral', '--json']
+/**
+ * What this adapter expects of the Codex CLI (the format is described in common.mjs): the global flags it
+ * passes before `exec`, and the flags of the turn itself after it.
+ */
+export const contract = {
+  versionArgs: ['--version'],
+  helpChecks: [
+    { args: ['--help'], flags: ['--no-daemon', '-a', '--disable'] },
+    {
+      args: ['exec', '--help'],
+      flags: [
+        '--model',
+        '-c',
+        '--ignore-user-config',
+        '--ephemeral',
+        '--sandbox',
+        '--skip-git-repo-check',
+        '--json',
+        '--color',
+        '-o'
+      ],
+      // Every turn relies on these.
+      required: ['--ignore-user-config', '--ephemeral', '--json']
+    }
+  ],
+  hiddenFlags: []
 };
 const DISABLED_FEATURES = ['shell_tool', 'multi_agent', 'hooks', 'apps', 'plugins'];
 
@@ -36,7 +57,7 @@ export async function codexCatalog(bin, run, signal) {
 async function inspect(ctx) {
   const { bin, run, signal, info } = ctx;
   const [cli, auth] = await Promise.all([
-    ctx.cli(() => checkCli(run, bin, { ...CLI_CHECK, options: { signal } })),
+    ctx.cli(() => checkCli(run, bin, { id: 'codex', contract, options: { signal } })),
     run(bin, ['login', 'status'], { signal })
   ]);
   info.version = cli.version;
@@ -168,6 +189,7 @@ export default {
   ],
   apiKeyEnv: ['OPENAI_API_KEY', 'CODEX_API_KEY'],
   supportsWeb: true,
+  contract,
   inspect,
   invoke
 };

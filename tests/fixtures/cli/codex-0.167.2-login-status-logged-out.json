@@ -1,0 +1,9 @@
+{
+  "args": [
+    "login",
+    "status"
+  ],
+  "code": 1,
+  "stdout": "",
+  "stderr": "Not logged in\n"
+}

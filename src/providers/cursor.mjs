@@ -16,13 +16,30 @@ const connectionLost =
 const usageLimit = /rate.?limit|quota|usage.?limit|out of credits|resource.?exhausted/i;
 const modelUnavailable =
   /model.{0,80}(invalid|unavailable|not found|not available|unknown)|cannot use this model|unknown model/i;
-// `agent --help` must list these flags, which every call relies on.
-const CLI_CHECK = {
-  id: 'cursor',
-  helpArgs: ['--help'],
-  requiredFlags: ['--print', '--trust', '--mode', '--sandbox', '--workspace', '--model', '--output-format'],
-  outdated: '当前 Cursor Agent CLI 缺少只读模式或所需参数。请更新后重试。'
+// The flags of every answer.
+const ANSWER_FLAGS = [
+  '--print',
+  '--trust',
+  '--mode',
+  '--sandbox',
+  '--workspace',
+  '--output-format',
+  '--model'
+];
+/**
+ * What this adapter expects of the Cursor Agent CLI (the format is described in common.mjs). No real Cursor
+ * output has been captured yet (see tests/fixtures/cli/README.md), so only scripts/check-cli-contract.mjs
+ * checks it against the CLI itself.
+ */
+export const contract = {
+  versionArgs: ['--version'],
+  helpChecks: [
+    { args: ['--help'], flags: ANSWER_FLAGS, required: ANSWER_FLAGS },
+    { args: ['status', '--help'], flags: ['--format'] }
+  ],
+  hiddenFlags: []
 };
+const OUTDATED = '当前 Cursor Agent CLI 缺少只读模式或所需参数。请更新后重试。';
 
 function credentialFile(env, home) {
   if (process.platform === 'darwin') return path.join(home, '.cursor', 'auth.json');
@@ -161,7 +178,9 @@ async function inspect(ctx) {
       const options = { cwd: workspace.cwd, env: workspace.env, signal, timeout: 12000 };
       const cliOptions = { cwd: workspace.cwd, env: { ...workspace.env }, signal };
       const [cli, status] = await Promise.all([
-        ctx.cli(() => checkCli(run, bin, { ...CLI_CHECK, options: cliOptions })),
+        ctx.cli(() =>
+          checkCli(run, bin, { id: 'cursor', contract, outdated: OUTDATED, options: cliOptions })
+        ),
         readStatus(bin, run, options)
       ]);
       info.version = cli.version;
@@ -280,6 +299,7 @@ export default {
   ],
   apiKeyEnv: ['CURSOR_API_KEY'],
   supportsWeb: true,
+  contract,
   inspect,
   invoke
 };
