@@ -1,8 +1,20 @@
 // Text sent to the models: standing instructions, earlier discussion, and the prompt of each stage.
 import { capabilityPrompt } from './capabilities.mjs';
 import { HISTORY_LIMIT } from './config.mjs';
-import { resultModel, speakerName } from './messages.mjs';
+import {
+  messageText,
+  questionContexts,
+  resultModel,
+  roomMessages,
+  speakerName,
+  stageName
+} from './messages.mjs';
 import { providerLabel } from './providers/index.mjs';
+
+/** Characters of one earlier message sent with the history; a longer message keeps its head and tail. */
+export const ENTRY_LIMIT = 12000;
+/** Characters of an earlier shared context sent with the history, shortened the same way. */
+export const CONTEXT_NOTE_LIMIT = 4000;
 
 /** Standing instructions for the participant shown as `label`. */
 export function instructions(label, webSearch) {
@@ -18,25 +30,97 @@ export function instructions(label, webSearch) {
   );
 }
 
-/** Earlier messages as prompt text, newest kept first within HISTORY_LIMIT; `dropped` tells whether any were left out. */
-export function historyFor(messages) {
-  let size = 0;
-  let dropped = false;
-  const kept = [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'system') continue;
-    const message = messages[i];
-    const speaker = message.role === 'user' ? '用户' : speakerName(message);
-    const model = resultModel(message);
-    const entry = `[${speaker}${model ? ' / ' + model : ''} / ${message.stage}]\n${message.text}`;
-    if (size + entry.length > HISTORY_LIMIT) {
-      dropped = true;
-      break;
+// Moves a cut at `index` off the middle of a surrogate pair, so that no character is split.
+function cutAt(text, index) {
+  const code = text.charCodeAt(index);
+  return index > 0 && code >= 0xdc00 && code <= 0xdfff ? index - 1 : index;
+}
+
+/** `text` cut to its head and tail, about `limit` characters in all, around a note of what was left out. */
+export function shorten(text, limit) {
+  if (text.length <= limit) return text;
+  const head = text.slice(0, cutAt(text, Math.floor(limit / 2)));
+  const tail = text.slice(cutAt(text, text.length - Math.ceil(limit / 2)));
+  return `${head}\n…（中间省略约 ${text.length - head.length - tail.length} 字）…\n${tail}`;
+}
+
+const gapNote = (count) => `（为控制长度，此处省略了 ${count} 条发言）`;
+
+/**
+ * One earlier message as history text, preceded by the shared context its question was asked with when that
+ * question changed it. `previous` is the context of the question before (null for the first question).
+ */
+function historyEntry(message, context, previous, currentContext) {
+  const parts = [];
+  let shortened = false;
+  if (context !== undefined && context !== (previous ?? '')) {
+    let note;
+    if (!context) note = '（已清空）';
+    else if (context === currentContext) note = '与上方本次的共享背景相同。';
+    else {
+      note = shorten(context, CONTEXT_NOTE_LIMIT);
+      shortened = note !== context;
     }
-    kept.unshift(entry);
-    size += entry.length;
+    parts.push(`[${previous === null ? '共享背景' : '共享背景（本轮更新）'}]\n${note}`);
   }
-  return { text: kept.join('\n\n'), dropped };
+  const speaker = message.role === 'user' ? '用户' : speakerName(message);
+  const label = [speaker, resultModel(message), stageName(message.stage)].filter(Boolean).join(' / ');
+  const text = messageText(message);
+  const body = shorten(text, ENTRY_LIMIT);
+  parts.push(`[${label}]\n${body}`);
+  return { text: parts.join('\n\n'), shortened: shortened || body !== text };
+}
+
+/**
+ * The earlier discussion of `room` as prompt text of at most `limit` characters, for a question asked with the
+ * shared context `currentContext`. Status messages are left out, and a message longer than ENTRY_LIMIT keeps
+ * its head and tail. Questions and moderator summaries are kept first, then analyses and reviews, newest first
+ * within each group; the kept messages appear in their original order, with a note wherever some were left
+ * out. A question that changed the shared context is preceded by the context it was asked with.
+ * Returns { text, omitted, shortened }: the number of messages left out and of kept messages that were
+ * shortened. `text` is '' only when the room has no earlier discussion.
+ */
+export function historyFor(room, currentContext = '', { limit = HISTORY_LIMIT } = {}) {
+  const contexts = questionContexts(room);
+  const entries = [];
+  let previous = null;
+  for (const message of roomMessages(room)) {
+    if (message.role === 'system') continue;
+    const context = contexts.get(message);
+    const entry = historyEntry(message, context, previous, currentContext);
+    if (context !== undefined) previous = context;
+    entries.push({ ...entry, primary: message.role === 'user' || message.role === 'summary' });
+  }
+
+  // Every kept entry may need a gap note before it and one more may close the history, each with its
+  // "\n\n" separator: reserving room for them keeps the text within `limit`.
+  const reserve = gapNote(entries.length).length + 2;
+  let used = reserve;
+  const kept = new Set();
+  for (const primary of [true, false]) {
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const entry = entries[index];
+      if (entry.primary !== primary || used + entry.text.length + 2 + reserve > limit) continue;
+      used += entry.text.length + 2 + reserve;
+      kept.add(index);
+    }
+  }
+
+  const parts = [];
+  let gap = 0;
+  let shortened = 0;
+  entries.forEach((entry, index) => {
+    if (!kept.has(index)) {
+      gap++;
+      return;
+    }
+    if (gap) parts.push(gapNote(gap));
+    gap = 0;
+    parts.push(entry.text);
+    if (entry.shortened) shortened++;
+  });
+  if (gap) parts.push(gapNote(gap));
+  return { text: parts.join('\n\n'), omitted: entries.length - kept.size, shortened };
 }
 
 /** Shared background, earlier discussion and the question: the start of every prompt in one round. */

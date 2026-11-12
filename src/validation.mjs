@@ -1,4 +1,4 @@
-// Validation of what the browser submits for a discussion round.
+// Validation of what the browser submits for a discussion round, and of the configurations rooms saved.
 import { CAPABILITY_LABELS } from './capabilities.mjs';
 import { AppError } from './errors.mjs';
 import { MODE_NAMES } from './messages.mjs';
@@ -59,4 +59,39 @@ export function readConfiguration(body) {
     settings[agent] = { model, reasoning, capability };
   }
   return { mode, participants, moderator, settings, webSearch };
+}
+
+const isObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+/** One participant's saved settings, with defaults for whatever is missing or invalid. */
+function savedSettings(options) {
+  const { model, reasoning, capability } = isObject(options) ? options : {};
+  return {
+    model: isModelId(model) ? model : '',
+    reasoning: typeof reasoning === 'string' && reasoning.length <= 32 ? reasoning : '',
+    capability: typeof capability === 'string' && CAPABILITY_LABELS.has(capability) ? capability : 'general'
+  };
+}
+
+/**
+ * A configuration saved in a room (room.configuration or a question's), made complete for display however it
+ * was saved or edited by hand: unknown participants are dropped, missing participants default as in
+ * readConfiguration, and settings that are missing or invalid become the defaults. Returns null when there
+ * is no configuration or its mode is unknown. To run with it again, pass it through readConfiguration.
+ */
+export function savedConfiguration(saved) {
+  if (!isObject(saved) || typeof saved.mode !== 'string' || !Object.hasOwn(MODE_NAMES, saved.mode))
+    return null;
+  const { mode } = saved;
+  const listed = Array.isArray(saved.participants)
+    ? [...new Set(saved.participants.filter(isProviderId))]
+    : PROVIDER_IDS.slice(0, 2);
+  const participants = isProviderId(mode) ? [mode] : listed;
+  if (!participants.length) return null;
+  const moderator = participants.includes(saved.moderator) ? saved.moderator : participants[0];
+  const requested = isObject(saved.settings) ? saved.settings : {};
+  const settings = {};
+  for (const agent of participants)
+    settings[agent] = savedSettings(Object.hasOwn(requested, agent) ? requested[agent] : undefined);
+  return { mode, participants, moderator, settings, webSearch: saved.webSearch === true };
 }

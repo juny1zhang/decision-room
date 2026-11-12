@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import { HEARTBEAT_INTERVAL, MAX_CONTEXT, MAX_MESSAGES, MAX_PROMPT, TITLE_LENGTH } from './config.mjs';
 import { AppError } from './errors.mjs';
+import { contextInEffect, hasContextSnapshot, roomMessages } from './messages.mjs';
 import {
   analysisPrompt,
   attributed,
@@ -58,6 +59,27 @@ function checkParticipants(currentHealth, { participants, settings, webSearch })
 }
 
 /**
+ * What a new question asked with the shared `context` stores about it: { context } when that differs from the
+ * context in effect for the previous question (for a room's first question: when it is not empty), else {}.
+ * A room saved before questions carried snapshots keeps its old context as room.legacyContext once a question
+ * changes it, so that its earlier questions still show the context they were asked with.
+ */
+function contextChange(room, context) {
+  const previous = contextInEffect(room);
+  if (context === previous) return {};
+  if (previous && !roomMessages(room).some(hasContextSnapshot)) room.legacyContext = previous;
+  return { context };
+}
+
+/** The status note saved when the history sent with a question had to be cut: what was cut, by count. */
+function historyNotice({ omitted, shortened }) {
+  const cuts = [];
+  if (omitted) cuts.push(`省略了 ${omitted} 条发言`);
+  if (shortened) cuts.push(`缩短了 ${shortened} 条较长的发言（保留开头和结尾）`);
+  return `为控制长度，本轮发送给模型的讨论记录${cuts.join('，并')}；完整记录仍可查看和导出。`;
+}
+
+/**
  * Runs one round for a /api/run `body` and streams it to `response`. Throws an AppError, before anything
  * is written, when the request is invalid or a participant is not ready. `signal` stops the round; work
  * already finished is kept. deps: { health (a health checker), invoke (see invoke.mjs), rooms (a room store) }.
@@ -69,7 +91,8 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
   const context = typeof body.context === 'string' ? body.context : '';
   if (!prompt || prompt.length > MAX_PROMPT) throw new AppError('问题不能为空，且不能超过 20,000 字符。');
   if (context.length > MAX_CONTEXT) throw new AppError('共享背景不能超过 40,000 字符。');
-  const currentHealth = await health.check(true, signal, agents);
+  // Reads every participant's login status again; version, help and model checks are reused.
+  const currentHealth = await health.check('login', signal, agents);
   if (signal.aborted) throw new AppError('讨论已停止。');
   checkParticipants(currentHealth, configuration);
   const now = new Date().toISOString();
@@ -84,9 +107,10 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
         messages: []
       };
   if (room.messages.length >= MAX_MESSAGES) throw new AppError('本次讨论已较长，请新开讨论并填写简短背景。');
+  const previous = historyFor(room, context);
+  const question = { configuration, ...contextChange(room, context) };
   room.context = context;
   room.configuration = configuration;
-  const previous = historyFor(room.messages);
   response.writeHead(200, {
     'Content-Type': 'application/x-ndjson; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -106,13 +130,8 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
   emit({ type: 'room', roomId: room.id, title: room.title });
   const heartbeat = setInterval(() => emit({ type: 'heartbeat' }), HEARTBEAT_INTERVAL);
   try {
-    await add('user', prompt, 'question', { configuration });
-    if (previous.dropped)
-      await add(
-        'system',
-        '较早的讨论记录超过本轮上下文上限，已暂不发送给模型；当前问题和共享背景完整保留。历史记录仍可查看和导出。',
-        'notice'
-      );
+    await add('user', prompt, 'question', question);
+    if (previous.omitted || previous.shortened) await add('system', historyNotice(previous), 'notice');
     const base = roundPrompt({ context, history: previous.text, prompt });
     const status = (agent, stage, text) => emit({ type: 'status', agent, stage, text });
     // Resolves to the answer, or to null when the call failed (recorded as an error message) or was stopped.
