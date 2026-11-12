@@ -1,7 +1,7 @@
 // One discussion round: checks, independent analyses, cross-reviews and the moderator's summary, streamed
 // to the browser as NDJSON events and saved to the room after every message.
 import { randomUUID } from 'node:crypto';
-import { HEARTBEAT_INTERVAL, MAX_CONTEXT, MAX_MESSAGES, MAX_PROMPT, TITLE_LENGTH } from './config.mjs';
+import { HEARTBEAT_INTERVAL, MAX_CONTEXT, MAX_MESSAGES, MAX_PROMPT } from './config.mjs';
 import { AppError } from './errors.mjs';
 import { contextInEffect, hasContextSnapshot, roomMessages } from './messages.mjs';
 import {
@@ -15,22 +15,36 @@ import {
 } from './prompts.mjs';
 import { providerLabel } from './providers/index.mjs';
 import { safeDetail } from './redact.mjs';
+import { defaultTitle } from './titles.mjs';
 import { readConfiguration } from './validation.mjs';
 
 const STAGE_STATUS = { analysis: '正在独立分析', review: '正在交叉审查', summary: '正在整理决策结论' };
 const STAGE_TASK = { analysis: '分析', review: '审查', summary: '整理' };
 
-/** The single discussion that may run at a time, so it can be refused, cancelled and reported as busy. */
+/**
+ * The single discussion that may run at a time, so it can be refused, cancelled and reported as busy, and the
+ * room it writes to, which may not be renamed or deleted meanwhile. begin(roomId) starts one and returns its
+ * AbortController; claim(controller, roomId) records its room once known (a new room's id is made later);
+ * roomId() is that room's id, or null.
+ */
 export function createActiveRun() {
   let controller = null;
+  let room = null;
   return {
     isBusy: () => controller !== null,
-    begin() {
+    roomId: () => room,
+    begin(roomId = null) {
       controller = new AbortController();
+      room = roomId;
       return controller;
     },
+    claim(running, roomId) {
+      if (controller === running) room = roomId;
+    },
     end(finished) {
-      if (controller === finished) controller = null;
+      if (controller !== finished) return;
+      controller = null;
+      room = null;
     },
     abort() {
       controller?.abort();
@@ -82,9 +96,10 @@ function historyNotice({ omitted, shortened }) {
 /**
  * Runs one round for a /api/run `body` and streams it to `response`. Throws an AppError, before anything
  * is written, when the request is invalid or a participant is not ready. `signal` stops the round; work
- * already finished is kept. deps: { health (a health checker), invoke (see invoke.mjs), rooms (a room store) }.
+ * already finished is kept. deps: { health (a health checker), invoke (see invoke.mjs), rooms (a room store),
+ * onRoom (optional: called with the room's id once it is known, before the room is first saved) }.
  */
-export async function runDiscussion(body, response, signal, { health, invoke, rooms }) {
+export async function runDiscussion(body, response, signal, { health, invoke, rooms, onRoom }) {
   const configuration = readConfiguration(body);
   const { mode, participants: agents, moderator, settings, webSearch } = configuration;
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
@@ -100,12 +115,13 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
     ? await rooms.load(body.roomId)
     : {
         id: randomUUID(),
-        title: prompt.slice(0, TITLE_LENGTH),
+        title: defaultTitle(prompt),
         createdAt: now,
         updatedAt: now,
         context,
         messages: []
       };
+  onRoom?.(room.id);
   if (room.messages.length >= MAX_MESSAGES) throw new AppError('本次讨论已较长，请新开讨论并填写简短背景。');
   const previous = historyFor(room, context);
   const question = { configuration, ...contextChange(room, context) };

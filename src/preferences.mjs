@@ -89,6 +89,7 @@ function savedConfiguration(value) {
  * Preferences saved in `file`, whose folder must exist. read() resolves to { configuration,
  * selectedRoomId }, null for whatever is missing or no longer valid. update(patch) merges a
  * readPreferencePatch() result into the file, written atomically with mode 0600, one update at a time.
+ * forgetRoom(id) clears selectedRoomId when it is `id` (that room was deleted), in turn with the updates.
  * flush() settles once every update has finished.
  */
 export function createPreferenceStore(file) {
@@ -106,11 +107,15 @@ export function createPreferenceStore(file) {
     };
   }
 
-  function update(patch) {
+  /** Writes the saved preferences merged with patchFor(saved), or nothing when that returns null. */
+  function change(patchFor) {
     const next = queue
       .catch(() => {})
       .then(async () => {
-        const merged = { ...(await read()), ...patch };
+        const saved = await read();
+        const patch = patchFor(saved);
+        if (!patch) return;
+        const merged = { ...saved, ...patch };
         const temporary = path.join(path.dirname(file), `.preferences-${randomUUID()}.tmp`);
         try {
           await fs.writeFile(temporary, JSON.stringify(merged, null, 2) + '\n', { mode: 0o600 });
@@ -124,5 +129,10 @@ export function createPreferenceStore(file) {
     return next;
   }
 
-  return { read, update, flush: () => queue.catch(() => {}) };
+  return {
+    read,
+    update: (patch) => change(() => patch),
+    forgetRoom: (id) => change((saved) => (saved.selectedRoomId === id ? { selectedRoomId: null } : null)),
+    flush: () => queue.catch(() => {})
+  };
 }

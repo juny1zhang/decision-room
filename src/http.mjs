@@ -2,12 +2,13 @@
 import { timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { MAX_BODY, MAX_DISCARD, PUBLIC_DIR } from './config.mjs';
+import { MAX_BODY, MAX_DISCARD, PUBLIC_DIR, ROOM_ID_PATTERN } from './config.mjs';
 import { runDiscussion } from './discussion.mjs';
 import { AppError } from './errors.mjs';
 import { exportRoom } from './export.mjs';
 import { readPreferencePatch } from './preferences.mjs';
 import { safeDetail } from './redact.mjs';
+import { readTitle } from './titles.mjs';
 
 const CONTENT_SECURITY_POLICY =
   "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; " +
@@ -153,6 +154,7 @@ function loggedTarget(target) {
  * deps: health (health checker), invoke (see invoke.mjs), rooms (room store), preferences (see
  * preferences.mjs), activeRun (see discussion.mjs), getPort() (the listening port), publicDir (UI files,
  * default <repo>/public), debug(line) (optional: receives method, path, status and duration per request).
+ * The room a discussion is running in cannot be renamed or deleted until it ends (409).
  */
 export function createRequestHandler({
   token,
@@ -169,13 +171,21 @@ export function createRequestHandler({
     if (activeRun.isBusy()) throw new AppError('已有讨论正在进行，请等待或停止当前讨论。', 409);
     const body = await readBody(request);
     if (activeRun.isBusy()) throw new AppError('已有讨论正在进行，请稍后再试。', 409);
-    const controller = activeRun.begin();
+    const { roomId } = body;
+    const controller = activeRun.begin(
+      typeof roomId === 'string' && ROOM_ID_PATTERN.test(roomId) ? roomId : null
+    );
     const disconnect = () => {
       if (!response.writableEnded) controller.abort();
     };
     response.once('close', disconnect);
     try {
-      await runDiscussion(body, response, controller.signal, { health, invoke, rooms });
+      await runDiscussion(body, response, controller.signal, {
+        health,
+        invoke,
+        rooms,
+        onRoom: (id) => activeRun.claim(controller, id)
+      });
     } catch (e) {
       if (!response.headersSent) fail(response, e);
       else if (!response.destroyed)
@@ -215,7 +225,7 @@ export function createRequestHandler({
       return json(response, 200, { ok: true });
     }
     if (pathname === '/api/rooms' && method === 'GET')
-      return json(response, 200, { rooms: await rooms.list() });
+      return json(response, 200, { rooms: await rooms.list(), runningRoomId: activeRun.roomId() });
     const match = pathname.match(/^\/api\/rooms\/([a-f0-9-]{36})(\/export)?$/);
     if (match && method === 'GET') {
       const room = await rooms.load(match[1]);
@@ -225,6 +235,20 @@ export function createRequestHandler({
         return;
       }
       return json(response, 200, room);
+    }
+    if (match && !match[2] && method === 'PATCH') {
+      const title = readTitle((await readBody(request)).title);
+      if (activeRun.roomId() === match[1])
+        throw new AppError('这次讨论正在进行，请等它结束或停止后再改名。', 409);
+      return json(response, 200, await rooms.rename(match[1], title));
+    }
+    if (match && !match[2] && method === 'DELETE') {
+      if (activeRun.roomId() === match[1])
+        throw new AppError('这次讨论正在进行，请等它结束或停止后再删除。', 409);
+      await rooms.remove(match[1]);
+      // Best effort: the room is gone either way, and the page skips a saved room it cannot open.
+      await preferences.forgetRoom(match[1]).catch(() => {});
+      return json(response, 200, { ok: true });
     }
     if (pathname === '/api/cancel' && method === 'POST') {
       activeRun.abort();
