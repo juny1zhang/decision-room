@@ -12,7 +12,8 @@
   <body>
     <div class="app">
       <div class="mobile-overlay" id="mobileOverlay"></div>
-      <aside class="sidebar" id="sidebar">
+      <!-- tabindex: on narrow screens focus moves into the sidebar drawer when it opens (js/rooms.js). -->
+      <aside class="sidebar" id="sidebar" tabindex="-1">
         <div class="brand">
           <span class="brand-mark"
             ><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -30,11 +31,77 @@
           >新的讨论
         </button>
         <div class="history" id="history">
-          <div class="sidebar-label">讨论记录</div>
+          <div class="sidebar-label" id="historyLabel">讨论记录</div>
+          <div class="room-search" role="search">
+            <svg
+              class="room-search-icon"
+              width="14"
+              height="14"
+              viewBox="0 0 20 20"
+              fill="none"
+              aria-hidden="true"
+            >
+              <circle cx="9" cy="9" r="5.25" stroke="currentColor" stroke-width="1.4" />
+              <path d="m13 13 3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+            <label class="sr-only" for="roomSearch">搜索讨论标题</label
+            ><input
+              class="room-search-input"
+              id="roomSearch"
+              type="search"
+              placeholder="搜索讨论标题"
+              autocomplete="off"
+              spellcheck="false"
+              enterkeyhint="search"
+            />
+          </div>
           <div id="roomList"><p class="history-empty">正在读取…</p></div>
+          <p class="history-empty" id="roomFilterEmpty" hidden>没有匹配的讨论</p>
+          <p class="sr-only" id="roomFilterStatus" role="status"></p>
         </div>
         <button class="new-button" id="mobileExport" hidden>导出当前讨论</button>
         <div class="sidebar-bottom"><span class="tiny-dot"></span><span>在你的电脑上运行</span></div>
+        <!-- The sidebar's dialogs: renaming and deleting a saved discussion (js/rooms.js). -->
+        <dialog class="room-dialog" id="renameDialog" aria-labelledby="renameTitle">
+          <form id="renameForm" novalidate>
+            <div class="dialog-head"><h2 class="dialog-title" id="renameTitle">重命名讨论</h2></div>
+            <div class="dialog-body">
+              <label class="room-dialog-label" for="renameInput">讨论标题</label
+              ><input
+                class="room-dialog-input"
+                id="renameInput"
+                type="text"
+                maxlength="80"
+                autocomplete="off"
+                spellcheck="false"
+                aria-describedby="renameError"
+              />
+              <p class="room-dialog-error" id="renameError" role="alert" hidden></p>
+              <div class="room-dialog-actions">
+                <button type="button" class="secondary-button" id="cancelRename">取消</button
+                ><button type="submit" class="primary-button" id="saveRename">保存</button>
+              </div>
+            </div>
+          </form>
+        </dialog>
+        <dialog
+          class="room-dialog"
+          id="deleteDialog"
+          aria-labelledby="deleteTitle"
+          aria-describedby="deleteDescription"
+        >
+          <div class="dialog-head"><h2 class="dialog-title" id="deleteTitle">删除讨论</h2></div>
+          <div class="dialog-body">
+            <p class="room-dialog-text" id="deleteDescription">
+              确定删除「<strong id="deleteName"></strong>」吗？这次讨论的全部记录会从本机删除，无法恢复。
+            </p>
+            <p class="room-dialog-error" id="deleteError" role="alert" hidden></p>
+            <div class="room-dialog-actions">
+              <button type="button" class="secondary-button" id="cancelDelete" autofocus>取消</button
+              ><button type="button" class="danger-button" id="confirmDelete">删除</button>
+            </div>
+          </div>
+        </dialog>
       </aside>
       <main class="main">
         <header class="topbar">

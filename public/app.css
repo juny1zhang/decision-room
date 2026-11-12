@@ -209,7 +209,8 @@ button svg {
   border-radius: 10px;
   margin-bottom: 5px;
 }
-.room-item:hover {
+.room-item:hover,
+.room-entry:hover > .room-item {
   background: #ecefe6;
 }
 .room-item.active {
@@ -249,6 +250,173 @@ button svg {
   height: 5px;
   border-radius: 50%;
   background: #889b80;
+}
+/* The sidebar has focus only for a moment when the drawer opens on narrow screens (js/rooms.js). */
+.sidebar:focus {
+  outline: none;
+}
+/* Search above the room list (js/rooms.js filters the list as you type); it stays in view while it scrolls. */
+.room-search {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 2px 0 8px;
+  background: var(--wash);
+}
+.room-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 12px;
+  color: #5c665e;
+  pointer-events: none;
+}
+.room-search-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 8px 0 30px;
+  /* 3.4:1 on --wash, so the field stands out as a field */
+  border: 1px solid #7d877c;
+  border-radius: 9px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 12px;
+}
+.room-search-input::placeholder {
+  /* 4.9:1 on --paper */
+  color: #69726a;
+  opacity: 1;
+}
+/* An outline outside the field would be cut off by the scrolling list once the field sticks to its top. */
+.room-search-input:focus-visible {
+  outline-offset: 0;
+}
+.room-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* One saved room: the button that opens it, with its rename and delete buttons on its second line. */
+.room-entry {
+  position: relative;
+  margin-bottom: 5px;
+}
+.room-entry > .room-item {
+  margin-bottom: 0;
+}
+.room-entry > .room-item:focus-visible {
+  outline-offset: -2px;
+}
+.room-entry .room-item-date {
+  /* Keeps the date clear of the rename and delete buttons. */
+  padding-right: 52px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* "进行中" after the date of the room a discussion is running in. */
+.room-item-running {
+  color: var(--green);
+  font-weight: 600;
+}
+.room-actions {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: flex;
+  gap: 2px;
+}
+.room-action {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  /* 4.6:1 or more on every room background, the hover colours below included */
+  color: #5c665e;
+  transition:
+    opacity 0.15s,
+    background 0.15s;
+}
+.room-action:hover:not(:disabled) {
+  background: #dfe6da;
+  color: var(--ink);
+}
+.room-action.delete:hover:not(:disabled) {
+  background: #f6e4df;
+  color: var(--red);
+}
+.room-action:focus-visible {
+  outline-offset: 0;
+}
+.room-action:disabled {
+  opacity: 0.4;
+}
+/* With a mouse, the actions show on the room under the pointer, the focused room and the open room. */
+@media (hover: hover) {
+  .room-entry:not(:hover, :focus-within, .active) .room-action {
+    opacity: 0;
+  }
+}
+/* Rename and delete dialogs. Their markup sits in the sidebar, whose drawer is hidden while closed. */
+.room-dialog {
+  width: min(420px, calc(100vw - 32px));
+  visibility: visible;
+}
+.room-dialog .dialog-body {
+  display: grid;
+  gap: 10px;
+}
+.room-dialog-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.room-dialog-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #7d877c;
+  border-radius: 9px;
+  background: white;
+  color: var(--ink);
+  font-size: 14px;
+}
+.room-dialog-input:focus-visible {
+  outline-offset: 1px;
+}
+.room-dialog-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.room-dialog-error {
+  margin: 0;
+  /* 5.7:1 on --paper */
+  color: var(--red);
+  font-size: 12px;
+}
+.room-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+}
+.danger-button {
+  border: 0;
+  /* White text: 5.7:1 */
+  background: var(--red);
+  color: white;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 12px;
+}
+.danger-button:hover:not(:disabled) {
+  background: #963b31;
+}
+.danger-button:disabled {
+  opacity: 0.6;
 }
 /* Backdrop behind the off-canvas sidebar; only shown on narrow screens. */
 .mobile-overlay {
@@ -1388,10 +1556,16 @@ dialog::backdrop {
     width: 265px;
     z-index: 12;
     transform: translateX(-100%);
-    transition: transform 0.2s;
+    /* Hidden once it has slid away, so that nothing in the closed drawer can take focus. */
+    visibility: hidden;
+    transition:
+      transform 0.2s,
+      visibility 0s 0.2s;
   }
   .sidebar.open {
     transform: translateX(0);
+    visibility: visible;
+    transition: transform 0.2s;
   }
   .mobile-overlay.visible {
     display: block;
