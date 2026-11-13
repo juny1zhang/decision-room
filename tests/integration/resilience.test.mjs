@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { capabilityPrompt } from '../../src/capabilities.mjs';
 import { turnComplete, turnProgress } from '../../src/discussion.mjs';
+import { goalProgress } from '../../src/goal.mjs';
 import { readConfiguration, savedConfiguration } from '../../src/validation.mjs';
 import { harness } from '../support/harness.mjs';
 
@@ -407,18 +408,20 @@ test('the page and the server agree on which latest turn can be resumed', async 
     addEventListener() {},
     document: { getElementById: () => null }
   });
-  const { incompleteTurnId } = await import('../../public/js/messages.js');
+  const { incompleteTurnId, resumableTurn } = await import('../../public/js/messages.js');
+  const { finalPlanIds } = await import('../../public/js/goal.js');
   let id = 0;
   const turn = (configuration, parts) => {
     const question = { id: `q${++id}`, role: 'user', stage: 'question', text: '问', configuration };
     question.turnId = question.id;
-    const messages = parts.map(([role, stage]) => ({
+    const messages = parts.map(([role, stage, extra = {}]) => ({
       id: `m${++id}`,
       turnId: question.id,
       role,
       stage,
       text: '答',
-      ...(role !== 'system' && { provider: role === 'summary' ? 'codex' : role })
+      ...(role !== 'system' && { provider: role === 'summary' ? 'codex' : role }),
+      ...extra
     }));
     return [question, ...messages];
   };
@@ -462,6 +465,86 @@ test('the page and the server agree on which latest turn can be resumed', async 
     assert.equal(server, incomplete, JSON.stringify(messages));
     assert.equal(incompleteTurnId(messages), incomplete ? question.id : null, JSON.stringify(messages));
   }
+  // Goal mode: resumable until every reviewer approved the latest version; at its cap, only with 继续磨合.
+  const goal = {
+    mode: 'goal',
+    participants: ['codex', 'claude', 'cursor'],
+    moderator: 'codex',
+    maxRounds: 2
+  };
+  const proposals = ['codex', 'claude', 'cursor'].map((agent) => [agent, 'proposal']);
+  const draft = (version, cap = 2) => ['summary', 'draft', { version, cap }];
+  const said = (agent, version, verdict) => [agent, 'feedback', { version, verdict }];
+  const goalCases = [
+    [turn(goal, proposals), 'incomplete'],
+    [turn(goal, [...proposals, draft(1)]), 'incomplete'],
+    [
+      turn(goal, [...proposals, draft(1), said('claude', 1, 'approve'), said('cursor', 1, 'approve')]),
+      'consensus'
+    ],
+    [turn(goal, [...proposals, draft(1), said('claude', 1, 'approve')]), 'incomplete'],
+    [
+      turn(goal, [...proposals, draft(1), said('claude', 1, 'revise'), said('cursor', 1, 'approve')]),
+      'incomplete'
+    ],
+    [
+      turn(goal, [
+        ...proposals,
+        draft(1),
+        said('claude', 1, 'revise'),
+        said('cursor', 1, 'approve'),
+        draft(2),
+        said('claude', 2, 'revise'),
+        said('cursor', 2, 'approve')
+      ]),
+      'capped'
+    ],
+    [
+      turn(goal, [
+        draft(1),
+        said('claude', 1, 'revise'),
+        said('cursor', 1, 'revise'),
+        draft(2),
+        said('claude', 2, 'revise'),
+        said('cursor', 2, 'revise'),
+        ['system', 'notice'],
+        draft(3, 4),
+        said('claude', 3, 'approve'),
+        said('cursor', 3, 'approve')
+      ]),
+      'consensus'
+    ],
+    // Feedback only counts after its version, on its version, and not from the version's author.
+    [turn(goal, [said('claude', 1, 'approve'), said('cursor', 1, 'approve'), draft(1)]), 'incomplete'],
+    [turn(goal, [draft(1), said('claude', 2, 'approve'), said('cursor', 2, 'approve')]), 'incomplete'],
+    [turn(goal, [draft(1), said('codex', 1, 'approve'), said('claude', 1, 'approve')]), 'incomplete'],
+    // Hand-edited: a missing verdict asks for changes; a version without a cap takes the configuration's;
+    // a draft by someone outside the turn is no version.
+    [turn(goal, [draft(1), said('claude', 1), said('cursor', 1, 'approve')]), 'incomplete'],
+    [
+      turn({ ...goal, maxRounds: 1 }, [draft(1, null), said('claude', 1, 'revise'), said('cursor', 1)]),
+      'capped'
+    ],
+    [turn(goal, [['summary', 'draft', { version: 1, provider: 'gemini' }]]), 'incomplete']
+  ];
+  for (const [messages, expected] of goalCases) {
+    const [question] = messages;
+    const configuration = readConfiguration(savedConfiguration(question.configuration));
+    const { status, latest } = goalProgress({ messages }, question, configuration);
+    assert.equal(status, expected, JSON.stringify(messages));
+    const page = resumableTurn(messages);
+    assert.equal(page === null, expected === 'consensus', JSON.stringify(messages));
+    if (page) assert.equal(page.capped, expected === 'capped', JSON.stringify(messages));
+    assert.deepEqual([...finalPlanIds(messages)], expected === 'consensus' ? [latest.draft.id] : []);
+  }
+  assert.deepEqual(resumableTurn(goalCases[5][0]), {
+    turnId: goalCases[5][0][0].id,
+    mode: 'goal',
+    capped: true,
+    cap: 2,
+    maxRounds: 2
+  });
+
   // Only the latest turn counts, and only one that carries its turn id.
   const [earlier] = cases[1];
   const [latest] = cases[0];

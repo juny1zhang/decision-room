@@ -35,6 +35,13 @@ test('a saved configuration is checked leniently and unknown fields are dropped'
     { mode: 'claude' },
     'Missing fields are fine'
   );
+  // Goal mode and its most versions; maxRounds is kept in the other modes too.
+  const goal = { mode: 'goal', participants: ['codex', 'claude'], moderator: 'claude', maxRounds: 6 };
+  assert.deepEqual(readPreferredConfiguration(goal), goal);
+  assert.deepEqual(readPreferredConfiguration({ mode: 'both', maxRounds: 1 }), {
+    mode: 'both',
+    maxRounds: 1
+  });
   assert.deepEqual(
     readPreferredConfiguration({
       mode: 'both',
@@ -68,7 +75,11 @@ test('configurations with unknown modes or providers, wrong types or long string
     { mode: 'debate', settings: { codex: { model: 'x'.repeat(241) } } },
     { mode: 'debate', settings: { codex: { reasoning: 'r'.repeat(33) } } },
     { mode: 'debate', settings: { codex: { capability: 'c'.repeat(33) } } },
-    { mode: 'debate', webSearch: 'true' }
+    { mode: 'debate', webSearch: 'true' },
+    { mode: 'goal', maxRounds: 0 },
+    { mode: 'goal', maxRounds: 7 },
+    { mode: 'goal', maxRounds: 2.5 },
+    { mode: 'goal', maxRounds: '3' }
   ]) {
     assert.throws(
       () => readPreferredConfiguration(value),

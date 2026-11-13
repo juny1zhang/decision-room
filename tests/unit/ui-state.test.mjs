@@ -94,3 +94,21 @@ test('a health response without a usable provider list keeps the current one', a
   for (const list of [undefined, [], [{ id: 'Not valid' }]]) assert.equal(setProviders(list), false);
   assert.deepEqual(providers, ['codex', 'claude', 'cursor']);
 });
+
+test('a saved selection restores goal mode and its most versions; one without them gets the default', async () => {
+  const { configuration, isSingle, restoreConfiguration, state } = await freshState();
+  restoreConfiguration({ ...saved('goal', ['claude', 'codex'], 'claude'), maxRounds: 5 });
+  assert.equal(isSingle(), false);
+  assert.deepEqual(
+    [state.mode, state.participants, state.moderator],
+    ['goal', ['codex', 'claude'], 'claude']
+  );
+  assert.equal(configuration().maxRounds, 5);
+  for (const maxRounds of [undefined, 0, 9, 2.5, '4']) {
+    restoreConfiguration({ ...saved('debate', ['codex', 'claude']), maxRounds });
+    assert.equal(state.maxRounds, 3, String(maxRounds));
+  }
+  // Goal mode needs two participants, as a debate does.
+  restoreConfiguration({ ...saved('goal', ['codex']), maxRounds: 2 });
+  assert.equal(state.mode, 'debate');
+});

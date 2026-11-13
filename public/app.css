@@ -797,6 +797,38 @@ button svg {
 }
 
 /*
+ * Goal mode in a message head. A feedback's verdict: its words and its mark, not its colour, tell 认可 from
+ * 需修改 (--green on --green-soft is 5.5:1, --clay on --clay-soft 4.6:1). The version of the plan everyone
+ * approved: a filled 最终方案 badge, white on --green at 6.4:1, and a card edged in --green.
+ */
+.verdict-badge,
+.plan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 5px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.verdict-badge.approve {
+  color: var(--green);
+  background: var(--green-soft);
+}
+.verdict-badge.revise {
+  color: var(--clay);
+  background: var(--clay-soft);
+}
+.plan-badge {
+  color: white;
+  background: var(--green);
+}
+.plan.final .answer-card {
+  border-color: var(--green);
+}
+
+/*
  * "重试未完成的部分" after the last message of an incomplete turn (messages.js updateResume). The button's
  * text is 5.5:1 on --green-soft (5.1:1 on its hover background); the hint is --sub.
  */
@@ -1165,6 +1197,27 @@ button svg {
   width: 12px;
   height: 12px;
   margin: 0;
+}
+/* Goal mode's "最多 [3 版]": the label in the web toggle's colour (4.6:1 on white), the choice in --ink. */
+.rounds-control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #6d7960;
+  white-space: nowrap;
+}
+.rounds-control select {
+  font: inherit;
+  color: var(--ink);
+  height: 26px;
+  padding: 0 3px;
+  border: 1px solid #ccd7ca;
+  border-radius: 6px;
+  background: white;
+}
+.rounds-control select:disabled {
+  opacity: 0.55;
 }
 .key-hint {
   font-size: 11px;
@@ -1761,14 +1814,17 @@ dialog::backdrop {
     min-height: 61px;
     max-height: 130px;
   }
+  /* Goal mode's "最多几版" does not fit beside the other options here: it moves to a second line. */
   .composer-options {
-    gap: 9px;
+    flex-wrap: wrap;
+    gap: 6px 9px;
   }
   .config-button {
     height: 30px;
     font-size: 11px;
   }
-  .web-toggle {
+  .web-toggle,
+  .rounds-control {
     font-size: 11px;
   }
   .send-button {

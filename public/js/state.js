@@ -2,6 +2,7 @@
 // from them. Every other module reads and writes this one object.
 import { token } from './api.js';
 import { $ } from './dom.js';
+import { DEFAULT_MAX_ROUNDS, isMaxRounds } from './goal.js';
 import { DEFAULT_PROVIDERS, isProviderId, readProviders } from './providers.js';
 
 /**
@@ -22,9 +23,17 @@ export const stageNames = {
   analysis: '独立分析',
   review: '交叉审查',
   summary: '讨论总结',
+  proposal: '独立方案',
+  draft: '方案',
+  feedback: '评审',
   error: '提示',
   question: '问题'
 };
+
+/** The modes with several participants; any other mode is the id of the one provider asked. */
+export const MULTI_MODES = Object.freeze(['debate', 'goal', 'both']);
+/** The modes in which a moderator writes: the debate's summary, and goal mode's plan. */
+export const MODERATED_MODES = Object.freeze(['debate', 'goal']);
 
 export const state = {
   roomId: null,
@@ -40,6 +49,8 @@ export const state = {
   participants: providers.slice(0, 2),
   moderator: providers[0],
   settings: {},
+  /** The most versions of the plan in goal mode ("最多几版"), kept in every mode like the other settings. */
+  maxRounds: DEFAULT_MAX_ROUNDS,
   selectionRestored: false,
   context: '',
   statuses: new Map(),
@@ -48,7 +59,7 @@ export const state = {
 };
 
 /** "Single" mode is stored as the id of the one provider being asked. */
-export const isSingle = () => state.mode !== 'debate' && state.mode !== 'both';
+export const isSingle = () => !MULTI_MODES.includes(state.mode);
 export const ready = (id) =>
   Boolean(state.health?.[id]?.subscription && state.health[id].authenticated && state.health[id].available);
 export const supportsWeb = (members) =>
@@ -79,7 +90,8 @@ export function configuration() {
     moderator: state.moderator,
     settings,
     // Until the first health check answers, keep the saved choice instead of saving "off".
-    webSearch: $('webSearch').checked && (!state.health || supportsWeb(state.participants))
+    webSearch: $('webSearch').checked && (!state.health || supportsWeb(state.participants)),
+    maxRounds: state.maxRounds
   };
 }
 
@@ -92,7 +104,7 @@ const selectable = (id) => (registryKnown ? providers.includes(id) : isProviderI
 /** Restores a selection saved in a draft or a room; ignores anything malformed. */
 export function restoreConfiguration(config) {
   if (!config || typeof config.mode !== 'string') return;
-  const single = config.mode !== 'debate' && config.mode !== 'both';
+  const single = !MULTI_MODES.includes(config.mode);
   if (single && !selectable(config.mode)) return;
   const listed = Array.isArray(config.participants)
     ? [...new Set(config.participants.filter(selectable))]
@@ -116,6 +128,8 @@ export function restoreConfiguration(config) {
     };
   }
   $('webSearch').checked = Boolean(config.webSearch);
+  // A selection saved before goal mode existed has none: the default, as for other missing settings.
+  state.maxRounds = isMaxRounds(config.maxRounds) ? config.maxRounds : DEFAULT_MAX_ROUNDS;
   state.selectionRestored = true;
 }
 

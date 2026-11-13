@@ -205,6 +205,9 @@
                   <button type="button" class="mode-button active" data-mode="debate" aria-pressed="true">
                     联合讨论
                   </button>
+                  <button type="button" class="mode-button" data-mode="goal" aria-pressed="false">
+                    目标模式
+                  </button>
                   <button type="button" class="mode-button" data-mode="both" aria-pressed="false">
                     分别回答
                   </button>
@@ -249,6 +252,21 @@
                     >模型与能力</button
                   ><label class="web-toggle" id="webControl"
                     ><input type="checkbox" id="webSearch" />允许查找网页</label
+                  ><!-- Goal mode only (js/composer.js): the most versions of the plan before it stops. -->
+                  <span
+                    class="rounds-control"
+                    id="roundsControl"
+                    title="方案最多修改到第几版；仍未全员认可时可以继续磨合"
+                    hidden
+                    ><label for="maxRounds">最多</label
+                    ><select id="maxRounds" aria-label="方案最多几版">
+                      <option value="1">1 版</option>
+                      <option value="2">2 版</option>
+                      <option value="3">3 版</option>
+                      <option value="4">4 版</option>
+                      <option value="5">5 版</option>
+                      <option value="6">6 版</option>
+                    </select></span
                   ><span class="key-hint" id="keyHint">⌘ Enter 发送</span>
                 </div>
                 <button type="submit" class="send-button" id="sendButton" disabled>
@@ -313,7 +331,7 @@
         <div class="config-scroll">
           <div id="providerCards"></div>
           <label class="moderator-row" id="moderatorField" for="moderator"
-            ><span>归纳主持人</span
+            ><span id="moderatorLabel">归纳主持人</span
             ><select id="moderator"></select
           ></label>
         </div>

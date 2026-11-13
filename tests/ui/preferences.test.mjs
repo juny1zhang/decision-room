@@ -2,7 +2,8 @@
 // server stops come back after it starts again on the same DECISION_ROOM_PORT with the same data folder,
 // in the same browser profile and in a new one, which only has what the server saved. Neither the room's
 // own configuration (that of its last round) nor its saved shared context replaces them: the same profile
-// keeps the shared context edited there and not sent yet.
+// keeps the shared context edited there and not sent yet. Goal mode's "最多几版", chosen there before
+// switching to another mode, comes back with the rest.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -42,6 +43,7 @@ async function assertRestored(page, context) {
     'Cursor'
   ]);
   assert.equal(await page.getByLabel('允许查找网页').isChecked(), true);
+  assert.equal(await page.evaluate(async () => (await import('/js/state.js')).state.maxRounds), 5);
   await page.getByRole('button', { name: '模型与能力' }).click();
   assert.equal(await page.locator('#participant-claude').isChecked(), false);
   assert.equal(await page.locator('#participant-cursor').isChecked(), true);
@@ -84,7 +86,12 @@ test('preferences survive a restart on the same port', { timeout: 120000 }, asyn
     await page.locator(`.room-entry[data-room-id="${roomId(1)}"] .room-item`).click();
     await page.locator('#roomHeading', { hasText: TITLE }).waitFor();
     assert.equal(await page.getByRole('button', { name: '联合讨论' }).getAttribute('aria-pressed'), 'true');
+    // "最多几版" shows in goal mode only, and is kept after switching away from it.
+    assert.equal(await page.locator('#roundsControl').isHidden(), true);
+    await page.getByRole('button', { name: '目标模式' }).click();
+    await page.getByRole('combobox', { name: '方案最多几版' }).selectOption('5');
     await page.getByRole('button', { name: '分别回答' }).click();
+    await page.locator('#roundsControl').waitFor({ state: 'hidden' });
     await page.getByRole('button', { name: '模型与能力' }).click();
     await page.locator('#participant-claude').click();
     await page.locator('#participant-cursor').click();
@@ -113,7 +120,8 @@ test('preferences survive a restart on the same port', { timeout: 120000 }, asyn
           codex: { model: '', reasoning: '', capability: 'general' },
           cursor: { model: 'mock-cursor', reasoning: '', capability: 'general' }
         },
-        webSearch: true
+        webSearch: true,
+        maxRounds: 5
       },
       selectedRoomId: roomId(1)
     });

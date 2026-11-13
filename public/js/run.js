@@ -1,6 +1,6 @@
 // Running a discussion: POST /api/run, read its newline-delimited JSON event stream into the
-// conversation, show live previews, progress and elapsed time, resume an incomplete turn ("重试未完成的部分")
-// and stop a run through /api/cancel.
+// conversation, show live previews, progress and elapsed time, resume an incomplete turn ("重试未完成的部分",
+// or "继续磨合" for a goal turn at its cap) and stop a run through /api/cancel.
 import { api, normalError } from './api.js';
 import { autosize, updateControls } from './composer.js';
 import { $ } from './dom.js';
@@ -190,10 +190,14 @@ async function submit(event) {
   await run;
 }
 
-/** Runs what is missing of turn `turnId`, the open room's latest, with the settings it was asked with. */
-async function resume(turnId) {
+/**
+ * Runs what is missing of turn `turnId`, the open room's latest, with the settings it was asked with;
+ * moreRounds ("继续磨合") lets a goal turn at its cap write more versions of its plan.
+ */
+async function resume(turnId, { moreRounds = false } = {}) {
   if (!turnId || !state.roomId || state.busy || state.serverBusy) return;
-  const run = startRun({ roomId: state.roomId, resumeTurnId: turnId }, { resume: true });
+  const body = { roomId: state.roomId, resumeTurnId: turnId, ...(moreRounds && { moreRounds: true }) };
+  const run = startRun(body, { resume: true });
   // The button goes while the turn runs; keep the keyboard focus on the way to stop it.
   focusStop();
   await run;

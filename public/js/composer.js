@@ -3,7 +3,9 @@
 import { savePreferences, token } from './api.js';
 import { $, element } from './dom.js';
 import { DRAFT_KEY, storage } from './storage.js';
+import { isMaxRounds } from './goal.js';
 import {
+  MODERATED_MODES,
   canUseMode,
   configuration,
   isSingle,
@@ -17,6 +19,12 @@ import {
 let draftTimer;
 let resizeFrame;
 
+/** The prompt's placeholder: goal mode asks for a goal and how to tell it is reached. */
+const PLACEHOLDERS = {
+  goal: '写下要达成的目标，以及怎样算完成…',
+  default: '说说你想决定什么，以及你最在意的事…'
+};
+
 /** Re-derives the enabled/hidden state and labels of all controls from the current state. */
 export function updateControls() {
   const running = state.busy || state.serverBusy;
@@ -25,7 +33,11 @@ export function updateControls() {
   $('stopButton').hidden = !running;
   $('stopButton').disabled = state.stopping;
   $('stopLabel').textContent = state.stopping ? '正在停止…' : '停止讨论';
-  $('sendLabel').textContent = state.roomId ? '继续讨论' : state.mode === 'debate' ? '开始讨论' : '发送问题';
+  $('sendLabel').textContent = state.roomId
+    ? '继续讨论'
+    : MODERATED_MODES.includes(state.mode)
+      ? '开始讨论'
+      : '发送问题';
   $('prompt').disabled = running;
   $('contextButton').disabled = running;
   $('configureButton').disabled = running || !state.health;
@@ -34,6 +46,11 @@ export function updateControls() {
   $('webSearch').disabled = running || !webAvailable;
   $('webControl').title =
     state.health && !webAvailable ? '当前参与者中有工具不支持网页检索' : '允许参与者在回答时搜索网页';
+  const goal = state.mode === 'goal';
+  $('roundsControl').hidden = !goal;
+  $('maxRounds').disabled = running;
+  $('maxRounds').value = String(state.maxRounds);
+  $('prompt').placeholder = PLACEHOLDERS[goal ? 'goal' : 'default'];
   for (const button of document.querySelectorAll('[data-mode]')) {
     const active = button.dataset.mode === (isSingle() ? 'single' : state.mode);
     button.classList.toggle('active', active);
@@ -44,7 +61,13 @@ export function updateControls() {
   $('exportButton').disabled = !state.roomId;
   $('mobileExport').hidden = !state.roomId;
   const team = state.participants.map(providerName).join('、');
-  const teamCaption = state.mode === 'debate' ? team + ' · ' + providerName(state.moderator) + ' 归纳' : team;
+  const moderator = providerName(state.moderator);
+  const teamCaption =
+    state.mode === 'debate'
+      ? team + ' · ' + moderator + ' 归纳'
+      : goal
+        ? `${team} · ${moderator} 主持 · 最多 ${state.maxRounds} 版`
+        : team;
   $('modeHelp').textContent = state.checking
     ? '正在检查本机工具…'
     : !token
@@ -68,10 +91,12 @@ export function updateControls() {
   }
   $('flowDescription').textContent =
     state.mode === 'debate'
-      ? '参与者先各自回答，再交换意见。由 ' + providerName(state.moderator) + ' 整理共识与分歧。'
-      : state.mode === 'both'
-        ? '参与者将独立回答同一个问题，你可以逐条比较各自的理由。'
-        : '由 ' + providerName(state.participants[0]) + ' 回答这个问题，你可以在同一场讨论中继续追问。';
+      ? '参与者先各自回答，再交换意见。由 ' + moderator + ' 整理共识与分歧。'
+      : goal
+        ? `参与者先各自提出方案，由 ${moderator} 合并成一份，其他参与者评审、${moderator} 修改，直到全员认可，最多 ${state.maxRounds} 版。`
+        : state.mode === 'both'
+          ? '参与者将独立回答同一个问题，你可以逐条比较各自的理由。'
+          : '由 ' + providerName(state.participants[0]) + ' 回答这个问题，你可以在同一场讨论中继续追问。';
   $('contextDot').hidden = !state.context.trim();
   $('progress').hidden = !running;
   if (running) {
@@ -84,7 +109,7 @@ export function updateControls() {
   }
 }
 
-/** Handles the mode switch: "debate", "both" or "single" (asks one provider). */
+/** Handles the mode switch: "debate", "goal", "both" or "single" (asks one provider). */
 export function changeMode(mode) {
   if (mode === 'single') {
     const id = state.participants.find(ready) || providers.find(ready) || state.participants[0];
@@ -160,6 +185,13 @@ export function setupComposer() {
       $('prompt').focus();
     });
   $('webSearch').addEventListener('change', persistDraft);
+  $('maxRounds').addEventListener('change', () => {
+    const value = Number($('maxRounds').value);
+    if (isMaxRounds(value)) state.maxRounds = value;
+    state.selectionRestored = true;
+    updateControls();
+    persistDraft();
+  });
   // A new width rewraps the prompt and may cross a breakpoint with another max-height.
   addEventListener('resize', () => {
     cancelAnimationFrame(resizeFrame);

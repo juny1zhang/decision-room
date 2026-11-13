@@ -5,6 +5,7 @@
 //   js/dom.js, js/storage.js   DOM helpers; Web Storage keys and safe access
 //   js/api.js                  access token and fetch wrapper for the local server
 //   js/providers.js            provider list from /api/health, connection status wording (no DOM)
+//   js/goal.js                 goal mode read from the messages: a turn's progress, the final plan (no DOM)
 //   js/state.js                shared state, provider registry and stage names, selection snapshots
 //   js/notices.js              error banner and toast
 //   js/markdown-parse.js       Markdown → tree parser (no DOM)

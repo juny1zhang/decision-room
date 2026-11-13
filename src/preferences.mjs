@@ -8,6 +8,7 @@ import { ROOM_ID_PATTERN } from './config.mjs';
 import { AppError } from './errors.mjs';
 import { MODE_NAMES } from './messages.mjs';
 import { PROVIDER_IDS, isProviderId } from './providers/index.mjs';
+import { isMaxRounds } from './validation.mjs';
 
 /** Longest string kept for each per-provider setting. */
 const SETTING_LIMITS = { model: 240, reasoning: 32, capability: 32 };
@@ -17,15 +18,15 @@ const isObject = (value) => Boolean(value) && typeof value === 'object' && !Arra
 
 /**
  * Checks a configuration as the page saves it, leniently: `mode` must be a known mode; `participants`,
- * `moderator` and the keys of `settings` known provider ids; settings short strings; `webSearch` a boolean.
- * Missing fields are allowed (the page completes them), unknown ones are dropped. Returns the cleaned
- * copy, or throws an AppError (400).
+ * `moderator` and the keys of `settings` known provider ids; settings short strings; `webSearch` a boolean;
+ * `maxRounds` a whole number from 1 to 6 (see validation.mjs). Missing fields are allowed (the page completes
+ * them), unknown ones are dropped. Returns the cleaned copy, or throws an AppError (400).
  */
 export function readPreferredConfiguration(value) {
   if (!isObject(value) || typeof value.mode !== 'string' || !Object.hasOwn(MODE_NAMES, value.mode))
     throw invalid();
   const configuration = { mode: value.mode };
-  const { participants, moderator, settings, webSearch } = value;
+  const { participants, moderator, settings, webSearch, maxRounds } = value;
   if (participants !== undefined) {
     if (
       !Array.isArray(participants) ||
@@ -57,6 +58,10 @@ export function readPreferredConfiguration(value) {
   if (webSearch !== undefined) {
     if (typeof webSearch !== 'boolean') throw invalid();
     configuration.webSearch = webSearch;
+  }
+  if (maxRounds !== undefined) {
+    if (!isMaxRounds(maxRounds)) throw invalid();
+    configuration.maxRounds = maxRounds;
   }
   return configuration;
 }

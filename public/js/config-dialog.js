@@ -3,7 +3,15 @@
 // state only on submit.
 import { persistDraft, updateControls } from './composer.js';
 import { $, closeOnBackdropClick, element } from './dom.js';
-import { activeCapabilities, isSingle, providerName, providers, ready, state } from './state.js';
+import {
+  MODERATED_MODES,
+  activeCapabilities,
+  isSingle,
+  providerName,
+  providers,
+  ready,
+  state
+} from './state.js';
 
 let configDraft;
 /** The status check the dialog opened with (see renderProviderFields). */
@@ -155,7 +163,9 @@ function renderConfiguration() {
   moderator.replaceChildren();
   for (const id of members) addOption(moderator, id, providerName(id));
   moderator.value = configDraft.moderator;
-  $('moderatorField').hidden = state.mode !== 'debate';
+  // The debate's moderator sums it up; goal mode's merges the proposals and revises the plan.
+  $('moderatorField').hidden = !MODERATED_MODES.includes(state.mode);
+  $('moderatorLabel').textContent = state.mode === 'goal' ? '方案主持人' : '归纳主持人';
   const valid = members.length >= (single ? 1 : 2);
   $('configCount').textContent = valid
     ? '已选 ' + members.length + ' 位参与者'

@@ -1,15 +1,18 @@
 // The conversation pane: message cards, live previews of answers still being written, the per-question
-// "本轮设置" details, the "重试未完成的部分" button of an incomplete turn and keeping the view scrolled to
-// the newest message.
+// "本轮设置" details, goal mode's verdict and 最终方案 badges, the "重试未完成的部分" or "继续磨合" button of
+// an incomplete turn and keeping the view scrolled to the newest message.
 import { $, element } from './dom.js';
+import { DEFAULT_MAX_ROUNDS, finalPlanIds, goalState, isMaxRounds, planVersion, teamOf } from './goal.js';
 import { markdown } from './markdown.js';
 import { toast } from './notices.js';
 import { initialOf, isProviderId } from './providers.js';
-import { activeCapabilities, providerName, stageNames, state } from './state.js';
+import { MULTI_MODES, activeCapabilities, providerName, stageNames, state } from './state.js';
 
 const ROLE_NAMES = { user: '你', system: '讨论提示' };
 /** Avatars of the roles that are not providers. A provider's avatar comes from app.css or its label. */
 const ROLE_AVATARS = { summary: '合', system: 'i' };
+/** The avatar of goal mode's versions of the plan, which the moderator writes with the role of a summary. */
+const PLAN_AVATAR = '案';
 /** Version 1 rooms only had Codex moderate, and their summaries name no provider. */
 const LEGACY_MODERATOR = 'codex';
 /** Least time between two Markdown renderings of one preview. */
@@ -99,12 +102,15 @@ function turnSettings(config) {
     if (!details.open || details.children.length > 1) return;
     const team = config.participants.filter(isProviderId);
     const moderator = isProviderId(config.moderator) ? providerName(config.moderator) : '主持人';
+    const rounds = isMaxRounds(config.maxRounds) ? config.maxRounds : DEFAULT_MAX_ROUNDS;
     const flow =
       config.mode === 'debate'
         ? '联合讨论 · ' + moderator + ' 归纳'
-        : config.mode === 'both'
-          ? '分别回答'
-          : '单独提问';
+        : config.mode === 'goal'
+          ? `目标模式 · ${moderator} 主持 · 最多 ${rounds} 版`
+          : config.mode === 'both'
+            ? '分别回答'
+            : '单独提问';
     details.append(element('div', '', flow + ' · 网页检索' + (config.webSearch ? '开启' : '关闭')));
     const list = element('ul');
     for (const id of team) {
@@ -123,33 +129,79 @@ function turnSettings(config) {
   return details;
 }
 
+/** The stage of a message as its card names it; goal mode's versions of the plan and feedback add the version. */
+function stageText(message) {
+  const version = planVersion(message.version);
+  if (version && message.stage === 'draft') return `方案 v${version}`;
+  if (version && message.stage === 'feedback') return `评审方案 v${version}`;
+  return stageNames[message.stage] || message.stage;
+}
+
+/**
+ * A feedback's verdict as a badge: its words (not only its colour) and a mark tell 认可 from 需修改, and
+ * screen readers hear it as the feedback's conclusion. Anything but approval counts as 需修改, as on the
+ * server.
+ */
+function verdictBadge(verdict) {
+  const approve = verdict === 'approve';
+  const badge = element('span', `verdict-badge ${approve ? 'approve' : 'revise'}`);
+  const mark = element('span', 'verdict-mark', approve ? '✓' : '✎');
+  mark.setAttribute('aria-hidden', 'true');
+  badge.append(element('span', 'sr-only', '结论：'), mark, approve ? '认可' : '需修改');
+  return badge;
+}
+
 /**
  * A card for a message of `kind` (see kindOf) with its head: avatar, speaker and stage. An answer takes
- * its provider's colours and avatar glyph from app.css through data-provider.
+ * its provider's colours and avatar glyph from app.css through data-provider. Goal mode's feedback also
+ * shows its verdict, and a version of the plan has room for the 最终方案 badge (see refreshFinalPlans).
  */
 function messageCard(message, kind) {
   const card = element('article', `message ${kind}`);
   if (kind === 'provider') card.dataset.provider = message.role;
+  const plan = kind === 'summary' && message.stage === 'draft';
+  if (plan) card.classList.add('plan');
   const head = element('div', 'message-head');
   if (kind !== 'user') {
     const avatar = element('span', 'avatar');
     avatar.setAttribute('aria-hidden', 'true');
-    avatar.dataset.initial = ROLE_AVATARS[kind] ?? initialOf(providerName(message.role));
+    avatar.dataset.initial = plan
+      ? PLAN_AVATAR
+      : (ROLE_AVATARS[kind] ?? initialOf(providerName(message.role)));
     head.append(avatar);
   }
   const speaker = element('span', 'speaker');
   if (kind === 'summary')
     speaker.append(
       nameOf(isProviderId(message.provider) ? message.provider : LEGACY_MODERATOR),
-      ' · 主持人总结'
+      plan ? ' · 主持人' : ' · 主持人总结'
     );
   else if (kind === 'provider') speaker.append(nameOf(message.role));
   else speaker.textContent = ROLE_NAMES[kind];
   head.append(speaker);
-  if (kind !== 'user' && message.stage)
-    head.append(element('span', 'stage-label', stageNames[message.stage] || message.stage));
+  if (kind !== 'user' && message.stage) head.append(element('span', 'stage-label', stageText(message)));
+  if (plan) {
+    const badge = element('span', 'plan-badge', '最终方案');
+    badge.hidden = true;
+    head.append(badge);
+  }
+  if (kind === 'provider' && message.stage === 'feedback' && typeof message.verdict === 'string')
+    head.append(verdictBadge(message.verdict));
   card.append(head);
   return { card, head };
+}
+
+/**
+ * Shows the 最终方案 badge on each version of a goal-mode plan that every reviewer approved, and on no other:
+ * it is known only once the last feedback on that version has arrived.
+ */
+function refreshFinalPlans() {
+  const finals = finalPlanIds(state.messages);
+  for (const card of $('messages').querySelectorAll('.message.plan')) {
+    const final = finals.has(card.dataset.messageId);
+    card.classList.toggle('final', final);
+    card.querySelector('.plan-badge').hidden = !final;
+  }
 }
 
 /** Keeps the newest content in view if the reader was at the bottom (`stick`), else offers the jump. */
@@ -181,14 +233,15 @@ function renderPreview(preview) {
  * every PREVIEW_RENDER_INTERVAL ms. reset starts the text over. The final message replaces the preview
  * (appendMessage); dropPreviews() and clearPreviews() remove previews of failed or ended calls.
  */
-export function showPreview({ agent, stage, append, reset }) {
+export function showPreview({ agent, stage, version, append, reset }) {
   if (!isProviderId(agent) || typeof stage !== 'string' || typeof append !== 'string') return;
   const key = `${agent}:${stage}`;
   let preview = previews.get(key);
   if (!preview) {
-    const kind = stage === 'summary' ? 'summary' : 'provider';
+    // The moderator's summary and versions of the plan look like the messages that will replace them.
+    const kind = stage === 'summary' || stage === 'draft' ? 'summary' : 'provider';
     const { card, head } = messageCard(
-      { role: kind === 'summary' ? 'summary' : agent, provider: agent, stage },
+      { role: kind === 'summary' ? 'summary' : agent, provider: agent, stage, version },
       kind
     );
     card.classList.add('preview');
@@ -241,6 +294,7 @@ export function appendMessage(message, scroll = true) {
   $('emptyState').hidden = true;
   const kind = kindOf(message.role);
   const { card, head } = messageCard(message, kind);
+  if (typeof message.id === 'string') card.dataset.messageId = message.id;
   head.append(element('time', 'message-time', formatTime(message.createdAt)));
   if (kind !== 'user') {
     const copy = element('button', 'copy-button', '复制');
@@ -267,6 +321,8 @@ export function appendMessage(message, scroll = true) {
     if (note.length) card.append(element('div', 'message-note', note.join(' · ')));
   }
   $('messages').append(card);
+  // A run's feedback can make a version of the plan final; a whole room is checked once it is shown.
+  if (scroll && (message.stage === 'feedback' || message.stage === 'draft')) refreshFinalPlans();
   if (scroll) followNewContent(autoScroll);
 }
 
@@ -298,6 +354,7 @@ export function replaceMessages(messages) {
   list.replaceChildren();
   $('emptyState').hidden = messages.length > 0;
   for (const message of messages) appendMessage(message, false);
+  refreshFinalPlans();
   updateResume();
   const render = ++roomRenders;
   requestAnimationFrame(() => {
@@ -309,24 +366,28 @@ export function replaceMessages(messages) {
 }
 
 /**
- * The id of the latest question in `messages` when its turn is incomplete and can be resumed, else null.
- * The question must carry its turnId (older rooms do not) and its configuration; the turn is incomplete
- * when a participant's analysis is missing or, in a debate, a participant's review, or a summary after all
- * of them. Mirrors turnProgress and turnComplete in src/discussion.mjs.
+ * The latest question's turn in `messages` when it can be resumed, as { turnId, mode, capped, cap,
+ * maxRounds }, else null. The question must carry its turnId (older rooms do not) and its configuration;
+ * the turn is incomplete when a participant's analysis is missing or, in a debate, a participant's review,
+ * or a summary after all of them. A goal turn can be resumed until every reviewer approved its latest
+ * version; capped tells that it reached `cap` versions without that, so that only "继续磨合" (another
+ * `maxRounds` versions) goes on. Mirrors turnProgress, turnComplete and goalProgress on the server.
  */
-export function incompleteTurnId(messages) {
+export function resumableTurn(messages) {
   const at = messages.findLastIndex((message) => message?.role === 'user');
   const question = messages[at];
   const config = question?.configuration;
   if (!question?.id || question.turnId !== question.id || typeof config?.mode !== 'string') return null;
   const debate = config.mode === 'debate';
-  const team =
-    debate || config.mode === 'both'
-      ? Array.isArray(config.participants)
-        ? config.participants.filter(isProviderId)
-        : []
-      : [config.mode];
+  const team = MULTI_MODES.includes(config.mode) ? teamOf(config) : [config.mode];
   if (!team.every(isProviderId) || !team.length) return null;
+  if (config.mode === 'goal') {
+    const turn = messages.slice(at + 1).filter((message) => message?.turnId === question.id);
+    const { cap, status } = goalState(turn, team, config.maxRounds);
+    if (status === 'consensus') return null;
+    const maxRounds = isMaxRounds(config.maxRounds) ? config.maxRounds : DEFAULT_MAX_ROUNDS;
+    return { turnId: question.id, mode: 'goal', capped: status === 'capped', cap, maxRounds };
+  }
   const analysed = new Set();
   const reviewed = new Set();
   let summaryAt = -1;
@@ -342,26 +403,48 @@ export function incompleteTurnId(messages) {
   const complete =
     team.every((id) => analysed.has(id)) &&
     (!debate || (team.every((id) => reviewed.has(id)) && summaryAt > answerAt));
-  return complete ? null : question.id;
+  return complete ? null : { turnId: question.id, mode: config.mode, capped: false };
 }
 
-/** What the "重试未完成的部分" button does: handler(turnId), set by onResume. */
+/** The id of the latest question in `messages` when its turn can be resumed (see resumableTurn), else null. */
+export const incompleteTurnId = (messages) => resumableTurn(messages)?.turnId ?? null;
+
+/**
+ * What the resume button does: handler(turnId, { moreRounds }), set by onResume. moreRounds is true for
+ * "继续磨合", which lets a goal turn at its cap write more versions.
+ */
 let resumeHandler = null;
 
-/** Sets what "重试未完成的部分" does with the id of the turn to resume. */
+/** Sets what "重试未完成的部分" and "继续磨合" do with the id of the turn to resume. */
 export function onResume(handler) {
   resumeHandler = handler;
 }
 
+/** The button's text and the hint beside it, for a turn as resumableTurn describes it. */
+function resumeWords({ mode, capped, cap, maxRounds }) {
+  if (capped)
+    return [
+      '继续磨合',
+      `已达到最多 ${cap} 版，仍有参与者认为需要修改。继续磨合会在当前方案的基础上再修改最多 ${maxRounds} 版。`
+    ];
+  return [
+    '重试未完成的部分',
+    mode === 'goal'
+      ? '只重新运行这一轮缺少的方案、评审或修改，已完成的内容保留。'
+      : '只重新运行这一轮缺少的回答、审查或归纳，已完成的内容保留。'
+  ];
+}
+
 /**
- * Shows "重试未完成的部分" after the last message while the open room's latest turn is incomplete (see
- * incompleteTurnId) and no discussion runs, and hides it otherwise.
+ * Shows "重试未完成的部分" after the last message while the open room's latest turn is incomplete, or
+ * "继续磨合" when it is a goal turn at its cap (see resumableTurn), and no discussion runs; hides it
+ * otherwise.
  */
 export function updateResume() {
   const running = state.busy || state.serverBusy;
-  const turnId = state.roomId && !running ? incompleteTurnId(state.messages) : null;
+  const turn = state.roomId && !running ? resumableTurn(state.messages) : null;
   let bar = $('resumeBar');
-  if (!turnId) {
+  if (!turn) {
     if (bar) bar.hidden = true;
     return;
   }
@@ -370,17 +453,20 @@ export function updateResume() {
   if (!bar) {
     bar = element('div', 'resume-bar');
     bar.id = 'resumeBar';
-    const button = element('button', 'resume-button', '重试未完成的部分');
+    const button = element('button', 'resume-button');
     button.type = 'button';
     button.id = 'resumeButton';
-    button.addEventListener('click', () => resumeHandler?.(bar.dataset.turnId));
-    bar.append(
-      button,
-      element('span', 'resume-hint', '只重新运行这一轮缺少的回答、审查或归纳，已完成的内容保留。')
+    button.addEventListener('click', () =>
+      resumeHandler?.(bar.dataset.turnId, { moreRounds: bar.dataset.moreRounds === 'true' })
     );
+    bar.append(button, element('span', 'resume-hint'));
     $('messages').after(bar);
   }
-  bar.dataset.turnId = turnId;
+  const [label, hint] = resumeWords(turn);
+  bar.querySelector('.resume-button').textContent = label;
+  bar.querySelector('.resume-hint').textContent = hint;
+  bar.dataset.turnId = turn.turnId;
+  bar.dataset.moreRounds = String(turn.capped);
   bar.hidden = false;
   if (appearing) followNewContent(stick);
 }

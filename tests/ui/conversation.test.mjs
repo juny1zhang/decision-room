@@ -214,7 +214,8 @@ test(
         claude: { model: 'haiku', reasoning: '', capability: 'risk' },
         cursor: { model: 'cursor-custom-1', reasoning: '', capability: 'general' }
       },
-      webSearch: false
+      webSearch: false,
+      maxRounds: 3
     };
     // The server keeps the applied configuration for the next visit.
     const saved = await until(async () => {
