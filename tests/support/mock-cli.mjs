@@ -216,7 +216,8 @@ export async function runMock(provider, wrapperUrl) {
     cursorConfig = {
       permissions: config.permissions,
       autoAcceptWebSearch: config.autoAcceptWebSearch,
-      sandbox: config.sandbox
+      sandbox: config.sandbox,
+      network: config.network
     };
   }
   fs.appendFileSync(

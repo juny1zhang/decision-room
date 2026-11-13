@@ -197,6 +197,8 @@ test('local decision-room integration with fake official CLIs', { timeout: 45000
           assert.ok(cursorConfig.permissions.deny.includes('WebFetch(*)'));
           assert.ok(cursorConfig.permissions.deny.includes('Shell(*)'));
           assert.equal(cursorConfig.sandbox.readBoundary, 'workspace');
+          // HTTP/1.1, which works behind the proxies and gateways where Cursor's HTTP/2 stream stalls.
+          assert.equal(cursorConfig.network.useHttp1ForAgent, true);
         }
       }
       const roomId = events.find((event) => event.type === 'room').roomId;

@@ -82,7 +82,7 @@ node server.mjs --debug    # 在终端输出调试信息
 
 调试模式在终端输出以 `[debug]` 开头的行：每次 CLI 调用的命令、参数、目录、退出码、耗时和错误输出，连接检查的结果，以及每个请求的路径和状态。问题和回答的内容不会输出，错误输出中的密钥、令牌和邮箱地址会被隐藏，但仍可能包含本机路径、用户名和 CLI 错误信息的片段。分享前请先检查一遍。
 
-在 macOS 的真实账号测试中，Codex 和 Claude 已经返回回答。Cursor 已验证登录和模型目录读取，真实回答的连接在该测试环境中反复中断。遇到相同现象时，可在空目录运行 `agent --mode ask` 并发送一句简短问题，检查原生 CLI 连接。自动化测试使用三个模拟 CLI，覆盖模型选择、三方讨论、目标模式、实时预览、停止、旧记录续聊和导出；适配器传给 Codex 和 Claude Code 的参数还会对照真实 CLI 的帮助输出检查，每周用最新版本复查一次。Cursor Agent 的帮助输出还没有采集，它的参数暂时只对照模拟 CLI 检查；每周复查也会检查最新版 Cursor Agent，但它的结果暂时不会让检查失败。
+在 macOS 的真实账号测试中，Codex、Claude 和 Cursor 都已返回回答。在部分代理或安全网关后面，Cursor 默认的 HTTP/2 数据流会卡住，几分钟后报「Connection stalled repeatedly」，直接运行 Cursor 也一样；因此议事间让 Cursor 改用 HTTP/1.1 传输回答，同时保留你在 `~/.cursor/cli-config.json` 里的其他网络设置。想沿用 Cursor 自己的设置时，启动前设置 `DECISION_ROOM_CURSOR_HTTP2=1`。自动化测试使用三个模拟 CLI，覆盖模型选择、三方讨论、目标模式、实时预览、停止、旧记录续聊和导出；适配器传给 Codex 和 Claude Code 的参数还会对照真实 CLI 的帮助输出检查，每周用最新版本复查一次。Cursor Agent 的帮助输出还没有采集，它的参数暂时只对照模拟 CLI 检查；每周复查也会检查最新版 Cursor Agent，但它的结果暂时不会让检查失败。
 
 ## 平台支持
 

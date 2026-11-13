@@ -12,7 +12,7 @@ import {
 import { AppError } from '../../src/errors.mjs';
 import claude from '../../src/providers/claude.mjs';
 import codex from '../../src/providers/codex.mjs';
-import cursor, { classifyCursorFailure } from '../../src/providers/cursor.mjs';
+import cursor, { classifyCursorFailure, cursorNetwork } from '../../src/providers/cursor.mjs';
 
 const NETWORK = '未能连接官方模型服务，请检查本机网络和证书设置。';
 const QUOTA = '套餐额度或速率限制已触发。请在对应官方工具查看用量，稍后再试；本应用不会自动切换 API。';
@@ -304,7 +304,7 @@ test('Cursor failures use its own classifier on stderr and error results only', 
     {
       category: 'other',
       message:
-        'Cursor 与模型服务的数据流多次停滞，Cursor 自行重试后仍未恢复。可以重试未完成的部分，或换一个模型（例如推理档位较低的版本）再试。'
+        'Cursor 与模型服务的数据流多次停滞，Cursor 自行重试后仍未恢复。请检查网络、代理或安全网关，稍后重试未完成的部分，或换一个模型。'
     }
   );
   // Failures Cursor's own patterns do not name fall back to the shared ones.
@@ -329,4 +329,28 @@ test('Cursor failures use its own classifier on stderr and error results only', 
   assert.match(classifyCursorFailure({ code: null }).message, /退出码 未知/);
   const answer = await call(cursor, { code: 0, stdout: result({ result: ` ${ANSWER} `, model: 'auto' }) });
   assert.deepEqual(answer, { text: ANSWER, model: 'auto' });
+});
+
+test("Cursor's agent stream uses HTTP/1.1 and keeps the user's other network settings", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'decision-room-cursor-network-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'cli-config.json');
+  // No configuration of the user's own, or one that is not JSON.
+  assert.deepEqual(await cursorNetwork(file, {}), { useHttp1ForAgent: true });
+  await fs.writeFile(file, '{not json');
+  assert.deepEqual(await cursorNetwork(file, {}), { useHttp1ForAgent: true });
+  // The user's own network settings are kept; their HTTP/2 default gives way to HTTP/1.1.
+  await fs.writeFile(
+    file,
+    JSON.stringify({ network: { useHttp1ForAgent: false, proxy: 'http://proxy.test:8080' } })
+  );
+  assert.deepEqual(await cursorNetwork(file, {}), {
+    useHttp1ForAgent: true,
+    proxy: 'http://proxy.test:8080'
+  });
+  // DECISION_ROOM_CURSOR_HTTP2=1 keeps the user's choice.
+  assert.deepEqual(await cursorNetwork(file, { DECISION_ROOM_CURSOR_HTTP2: '1' }), {
+    useHttp1ForAgent: false,
+    proxy: 'http://proxy.test:8080'
+  });
 });

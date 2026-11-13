@@ -52,6 +52,28 @@ const STREAM_FLAG = '--stream-partial-output';
 /** Executable path → whether its help, as the last health check read it, lists STREAM_FLAG. */
 const streaming = new Map();
 
+/**
+ * The `network` settings of the private Cursor configuration: those of the user's own cli-config.json
+ * (`configFile`; a proxy setting, for example), with HTTP/1.1 for the agent's stream. Behind some proxies
+ * and secure web gateways Cursor's default HTTP/2 stream stalls until Cursor gives up after minutes
+ * ("Connection stalled repeatedly"), while HTTP/1.1 works everywhere. DECISION_ROOM_CURSOR_HTTP2=1 keeps the
+ * user's own choice instead.
+ */
+export async function cursorNetwork(configFile, env = process.env) {
+  let network = {};
+  try {
+    const own = JSON.parse(await fs.readFile(configFile, 'utf8'));
+    if (isObject(own?.network)) network = { ...own.network };
+  } catch {}
+  if (env.DECISION_ROOM_CURSOR_HTTP2 !== '1') network.useHttp1ForAgent = true;
+  return network;
+}
+
+/** The user's own Cursor CLI configuration file. */
+function userConfigFile(env, home) {
+  return path.join(env.CURSOR_CONFIG_DIR || path.join(home, '.cursor'), 'cli-config.json');
+}
+
 function credentialFile(env, home) {
   if (process.platform === 'darwin') return path.join(home, '.cursor', 'auth.json');
   if (process.platform === 'win32')
@@ -103,7 +125,8 @@ async function withCursorWorkspace(runtimeDir, webSearch, callback) {
         approvalMode: 'allowlist',
         permissions: { allow: webSearch ? ['WebFetch(*)'] : [], deny },
         autoAcceptWebSearch: webSearch,
-        sandbox: { mode: 'enabled', readBoundary: 'workspace' }
+        sandbox: { mode: 'enabled', readBoundary: 'workspace' },
+        network: await cursorNetwork(userConfigFile(process.env, os.homedir()))
       }),
       { mode: 0o600 }
     );
@@ -243,7 +266,7 @@ const CURSOR_FAILURES = [
   [
     'other',
     connectionStalled,
-    'Cursor 与模型服务的数据流多次停滞，Cursor 自行重试后仍未恢复。可以重试未完成的部分，或换一个模型（例如推理档位较低的版本）再试。'
+    'Cursor 与模型服务的数据流多次停滞，Cursor 自行重试后仍未恢复。请检查网络、代理或安全网关，稍后重试未完成的部分，或换一个模型。'
   ],
   ['network', connectionLost, 'Cursor 与模型服务的连接已中断。请检查网络后重试。']
 ];
