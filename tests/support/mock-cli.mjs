@@ -36,7 +36,11 @@ export const MOCK_USAGE = {
 // expiredCatalog (Cursor), and for streaming: noStreamFlags (help without the streaming flags, as an older
 // CLI) and streamDelayMs (the pause before each streamed piece, 20 ms by default). With the flags in its
 // help the app asks Claude and Cursor for stream-json output; Codex always streams its --json events, with
-// item.updated previews unless noStreamFlags is set.
+// item.updated previews unless noStreamFlags is set. For goal mode, verdicts sets the line a feedback answer
+// (a prompt that asks for a review of a version of the plan) ends with, by that provider's feedback calls in
+// order, failed ones included: 'approve' (结论：认可), 'revise' (结论：需修改), anything else for none; the
+// last entry repeats, a single string stands for every call, and without it a feedback has no verdict line
+// (which counts as 需修改). Counted in verdicts-<provider>.count.
 export async function runMock(provider, wrapperUrl) {
   const dir = path.dirname(fileURLToPath(wrapperUrl));
   const controlPath = path.join(dir, 'control.json');
@@ -181,10 +185,20 @@ export async function runMock(provider, wrapperUrl) {
   const count = fs.existsSync(logPath)
     ? fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).length
     : 0;
-  const result =
+  let result =
     typeof settings.answer === 'string'
       ? settings.answer
       : `MOCK_${provider.toUpperCase()}_RESULT_${count + 1}`;
+  if (settings.verdicts !== undefined && /的身份评审方案 v\d+/.test(prompt)) {
+    const verdicts = [settings.verdicts].flat();
+    const counter = path.join(dir, `verdicts-${provider}.count`);
+    const number = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
+    fs.writeFileSync(counter, String(number + 1));
+    const verdict = { approve: '结论：认可', revise: '结论：需修改' }[
+      verdicts[Math.min(number, verdicts.length - 1)]
+    ];
+    if (verdict) result += `\n\n${verdict}`;
+  }
   const authOverrides = [
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_AUTH_TOKEN',

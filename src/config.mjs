@@ -42,6 +42,12 @@ export const MAX_CONTEXT = 40000;
 /** Messages after which a room no longer accepts follow-up questions. */
 export const MAX_MESSAGES = 500;
 /**
+ * Versions of the plan a goal-mode turn may write before it stops without consensus ("最多几版"): the default
+ * and the most a configuration may ask for. "继续磨合" allows that many more each time.
+ */
+export const DEFAULT_MAX_ROUNDS = 3;
+export const MAX_ROUNDS_LIMIT = 6;
+/**
  * Most visible characters (grapheme clusters, the closing "…" included) of a new room's default title,
  * which src/titles.mjs makes from the first non-empty line of its first question.
  */

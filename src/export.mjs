@@ -1,5 +1,6 @@
 // Markdown export of a saved room.
 import { CAPABILITY_LABELS } from './capabilities.mjs';
+import { finalPlans } from './goal.mjs';
 import {
   MODE_NAMES,
   messageText,
@@ -7,7 +8,7 @@ import {
   resultModel,
   roomMessages,
   speakerName,
-  stageName
+  stageLabel
 } from './messages.mjs';
 import { providerLabel } from './providers/index.mjs';
 import { savedConfiguration } from './validation.mjs';
@@ -66,9 +67,10 @@ export function answerNote(message) {
 function configurationMarkdown(saved) {
   const configuration = savedConfiguration(saved);
   if (!configuration) return '';
-  const { mode, participants, moderator, settings, webSearch } = configuration;
+  const { mode, participants, moderator, settings, webSearch, maxRounds } = configuration;
   const lines = [`本轮设置 · ${MODE_NAMES[mode]} · 网页检索${webSearch ? '开启' : '关闭'}`];
-  if (mode === 'debate') lines[0] += ` · 主持人 ${providerLabel(moderator)}`;
+  if (mode === 'debate' || mode === 'goal') lines[0] += ` · 主持人 ${providerLabel(moderator)}`;
+  if (mode === 'goal') lines[0] += ` · 最多 ${maxRounds} 版`;
   lines.push('');
   for (const agent of participants) {
     const { model, reasoning, capability } = settings[agent];
@@ -81,8 +83,9 @@ function configurationMarkdown(saved) {
 
 /**
  * The whole room as Markdown: title, the shared context of its first question, then every message with its
- * stage, time, settings, and model, time taken and tokens. A question that changed the shared context is
- * followed by the new one.
+ * stage (with the version of a goal-mode plan and the verdict of its feedback; the version everyone approved
+ * is the final plan, 最终方案), time, settings, and model, time taken and tokens. A question that changed the
+ * shared context is followed by the new one.
  */
 export function exportRoom(room) {
   const created = localDateTime(room.createdAt);
@@ -92,8 +95,10 @@ export function exportRoom(room) {
   const first = contexts.size ? contexts.values().next().value : room.context;
   if (typeof first === 'string' && first) out += `## 共享背景\n\n${first}\n\n`;
   let previous = first;
+  const finals = finalPlans(room);
   for (const message of roomMessages(room)) {
-    const heading = [speakerName(message), stageName(message.stage), localDateTime(message.createdAt)];
+    const stage = stageLabel(message, finals.has(message));
+    const heading = [speakerName(message), stage, localDateTime(message.createdAt)];
     out += `## ${heading.filter(Boolean).join(' · ')}\n\n`;
     const settings = configurationMarkdown(message.configuration);
     if (settings) out += settings + '\n\n';

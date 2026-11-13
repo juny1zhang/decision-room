@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AppError } from '../../src/errors.mjs';
-import { isModelId, readConfiguration } from '../../src/validation.mjs';
+import { isModelId, readConfiguration, savedConfiguration } from '../../src/validation.mjs';
 
 const defaults = { model: '', reasoning: '', capability: 'general' };
 
@@ -47,7 +47,8 @@ test('readConfiguration fills in a Codex and Claude debate by default', () => {
     participants: ['codex', 'claude'],
     moderator: 'codex',
     settings: { codex: defaults, claude: defaults },
-    webSearch: false
+    webSearch: false,
+    maxRounds: 3
   });
 });
 
@@ -57,7 +58,8 @@ test('readConfiguration uses the selected provider alone in single mode', () => 
     participants: ['cursor'],
     moderator: 'cursor',
     settings: { cursor: defaults },
-    webSearch: true
+    webSearch: true,
+    maxRounds: 3
   });
 });
 
@@ -68,7 +70,34 @@ test('readConfiguration keeps three participants with their own settings and mod
     cursor: { model: 'mock-cursor[context=1m]', reasoning: '', capability: 'plan' }
   };
   const body = { mode: 'debate', participants: ['cursor', 'claude', 'codex'], moderator: 'cursor', settings };
-  assert.deepEqual(readConfiguration(body), { ...body, webSearch: false });
+  assert.deepEqual(readConfiguration(body), { ...body, webSearch: false, maxRounds: 3 });
+});
+
+test('readConfiguration takes goal mode with its moderator and the most versions of its plan', () => {
+  const body = { mode: 'goal', participants: ['claude', 'cursor', 'codex'], moderator: 'cursor' };
+  for (const maxRounds of [1, 4, 6]) {
+    const configuration = readConfiguration({ ...body, maxRounds });
+    assert.equal(configuration.mode, 'goal');
+    assert.equal(configuration.moderator, 'cursor');
+    assert.equal(configuration.maxRounds, maxRounds);
+  }
+  assert.equal(readConfiguration(body).maxRounds, 3, 'three versions by default');
+  // Kept in every mode, so that the choice outlives a switch to another mode.
+  assert.equal(readConfiguration({ mode: 'both', maxRounds: 5 }).maxRounds, 5);
+});
+
+test('savedConfiguration keeps a valid maxRounds and gives older or broken configurations the default', () => {
+  const saved = { mode: 'goal', participants: ['codex', 'claude'], moderator: 'claude' };
+  assert.equal(savedConfiguration({ ...saved, maxRounds: 5 }).maxRounds, 5);
+  for (const maxRounds of [undefined, 0, 7, 2.5, '4', null])
+    assert.equal(savedConfiguration({ ...saved, maxRounds }).maxRounds, 3, String(maxRounds));
+  // A debate saved before goal mode existed reads, and runs again, as before.
+  const legacy = { mode: 'debate', participants: ['codex', 'claude'], moderator: 'codex', webSearch: true };
+  assert.deepEqual(readConfiguration(savedConfiguration(legacy)), {
+    ...legacy,
+    settings: { codex: defaults, claude: defaults },
+    maxRounds: 3
+  });
 });
 
 test('readConfiguration completes partial settings and keeps settings of non-participants', () => {
@@ -99,7 +128,17 @@ test('readConfiguration rejects invalid selections with a specific message', () 
     [{ mode: 'both', participants: ['codex', 'claude', 'cursor', 'codex'] }, participantsMessage],
     [{ mode: 'codex', participants: ['codex', 'claude'] }, '单方模式只能选择对应的参与者。'],
     [{ mode: 'codex', participants: ['claude'] }, '单方模式只能选择对应的参与者。'],
-    [{ mode: 'both', participants: ['codex'] }, '联合讨论和分别回答需要至少两位参与者。'],
+    [{ mode: 'both', participants: ['codex'] }, '联合讨论、目标模式和分别回答需要至少两位参与者。'],
+    [{ mode: 'goal', participants: ['claude'] }, '联合讨论、目标模式和分别回答需要至少两位参与者。'],
+    [
+      { mode: 'goal', participants: ['claude', 'codex'], moderator: 'cursor' },
+      '请从本轮参与者中选择主持人。'
+    ],
+    ...[0, 7, -1, 2.5, '3', null, true, NaN, Infinity].map((maxRounds) => [
+      { mode: 'goal', maxRounds },
+      '「最多几版」必须是 1 到 6 之间的整数。'
+    ]),
+    [{ mode: 'debate', maxRounds: 12 }, '「最多几版」必须是 1 到 6 之间的整数。'],
     [
       { mode: 'debate', participants: ['cursor', 'claude'], moderator: 'codex' },
       '请从本轮参与者中选择主持人。'

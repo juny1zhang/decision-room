@@ -1,22 +1,27 @@
-// One discussion turn: checks, independent analyses, cross-reviews and the moderator's summary, streamed
-// to the browser as NDJSON events and saved to the room after every message.
+// One discussion turn: checks, independent analyses, cross-reviews and the moderator's summary, or in goal
+// mode proposals and versions of one plan until every participant approves (see goal.mjs), streamed to the
+// browser as NDJSON events and saved to the room after every message.
 //
 // Events: { type: 'room', roomId, title } first; { type: 'message', message } for every saved message;
-// { type: 'status', agent, stage, text, retry? } as a participant starts, thinks, searches the web, retries
-// after a lost connection (retry: true; its preview starts over), finishes or fails (stage 'error');
-// { type: 'delta', agent, stage, append, reset? } with the text a participant's CLI streams before its
-// answer is final (see livePreview); { type: 'heartbeat' } while nothing else happens; { type: 'done',
-// roomId } last. Answer messages also store durationMs and, when the CLI reports it, usage { inputTokens,
-// outputTokens, cachedInputTokens }.
+// { type: 'status', agent, stage, text, version?, retry? } as a participant starts, thinks, searches the
+// web, retries after a lost connection (retry: true; its preview starts over), finishes or fails (stage
+// 'error'); { type: 'delta', agent, stage, version?, append, reset? } with the text a participant's CLI
+// streams before its answer is final (see livePreview); { type: 'heartbeat' } while nothing else happens;
+// { type: 'done', roomId } last. version is the version of the plan a goal-mode draft or feedback is about.
+// Answer messages also store durationMs and, when the CLI reports it, usage { inputTokens, outputTokens,
+// cachedInputTokens }.
 //
 // Every message of a turn carries turnId, the id of the turn's question (the question's own included). A
 // call that fails for a network reason is tried once more. A debate goes on without the participants that
-// failed as long as two analyses (then two reviews) succeeded. An incomplete turn can be resumed: { roomId,
-// resumeTurnId } runs only what is missing of it (see turnProgress).
+// failed as long as two analyses (then two reviews) succeeded; a goal turn as long as two proposals did,
+// but every feedback is needed to know whether everyone approves. An incomplete turn can be resumed:
+// { roomId, resumeTurnId } runs only what is missing of it (see turnProgress and goalProgress); a goal turn
+// that reached its cap without consensus goes on with { roomId, resumeTurnId, moreRounds: true }.
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { HEARTBEAT_INTERVAL, MAX_CONTEXT, MAX_MESSAGES, MAX_PROMPT, MAX_REPLY } from './config.mjs';
 import { AppError } from './errors.mjs';
+import { goalProgress, parseVerdict } from './goal.mjs';
 import {
   contextInEffect,
   hasContextSnapshot,
@@ -27,9 +32,13 @@ import {
 } from './messages.mjs';
 import {
   analysisPrompt,
+  draftPrompt,
+  feedbackPrompt,
   historyFor,
   participantNames,
+  proposalPrompt,
   reviewPrompt,
+  revisionPrompt,
   roundPrompt,
   summaryPrompt,
   withCapability
@@ -39,8 +48,26 @@ import { safeDetail } from './redact.mjs';
 import { defaultTitle } from './titles.mjs';
 import { readConfiguration, readTurnId, savedConfiguration } from './validation.mjs';
 
-const STAGE_STATUS = { analysis: '正在独立分析', review: '正在交叉审查', summary: '正在整理决策结论' };
-const STAGE_TASK = { analysis: '分析', review: '审查', summary: '整理' };
+const STAGE_STATUS = {
+  analysis: '正在独立分析',
+  review: '正在交叉审查',
+  summary: '正在整理决策结论',
+  proposal: '正在提出方案',
+  draft: '正在整理方案',
+  feedback: '正在评审方案'
+};
+const STAGE_TASK = {
+  analysis: '分析',
+  review: '审查',
+  summary: '整理',
+  proposal: '提出方案',
+  draft: '整理方案',
+  feedback: '评审方案'
+};
+/** "正在整理方案 v2": the status of a call for `stage`, naming the version of the plan it is about. */
+const stageStatus = (stage, version) => STAGE_STATUS[stage] + (version ? ` v${version}` : '');
+/** The moderator's stages, which take no participant's analysis focus. */
+const MODERATOR_STAGES = new Set(['summary', 'draft']);
 /** Status of what a model does while it answers (see invoke.mjs); 'writing' shows the stage's status. */
 const ACTIVITY_STATUS = { thinking: '正在思考', searching: '正在检索网页' };
 /** Least time between two preview events of one call. */
@@ -50,14 +77,14 @@ export const RETRY_DELAY = 1500;
 const RETRY_STATUS = '连接中断，正在重试…';
 
 /**
- * The live preview of one call by `agent` for `stage`. text(chunk) collects the answer text the CLI
- * streams and emits it as { type: 'delta', agent, stage, append } at most once per DELTA_INTERVAL; the
- * first event of the call also carries reset: true, so the page starts this preview over (should an
- * earlier call for the same agent and stage have left one). Up to MAX_REPLY characters are previewed.
- * close() stops it; close({ flush: true }) first emits the text still waiting, so that the deltas add up
- * to all the streamed text before the final message arrives.
+ * The live preview of one call by `agent` for `stage` (about `version` of a goal-mode plan, if given).
+ * text(chunk) collects the answer text the CLI streams and emits it as { type: 'delta', agent, stage,
+ * version?, append } at most once per DELTA_INTERVAL; the first event of the call also carries reset: true,
+ * so the page starts this preview over (should an earlier call for the same agent and stage have left one).
+ * Up to MAX_REPLY characters are previewed. close() stops it; close({ flush: true }) first emits the text
+ * still waiting, so that the deltas add up to all the streamed text before the final message arrives.
  */
-function livePreview(emit, agent, stage) {
+function livePreview(emit, agent, stage, version) {
   let pending = '';
   let size = 0;
   let sentAt = -Infinity;
@@ -68,7 +95,14 @@ function livePreview(emit, agent, stage) {
     clearTimeout(timer);
     timer = null;
     if (closed || !pending) return;
-    emit({ type: 'delta', agent, stage, append: pending, ...(!started && { reset: true }) });
+    emit({
+      type: 'delta',
+      agent,
+      stage,
+      ...(version && { version }),
+      append: pending,
+      ...(!started && { reset: true })
+    });
     started = true;
     pending = '';
     sentAt = Date.now();
@@ -172,12 +206,14 @@ function historyNotice({ omitted, shortened }) {
   return `为控制长度，本轮发送给模型的讨论记录${cuts.join('，并')}；完整记录仍可查看和导出。`;
 }
 
-/** An answer message as material for a review or summary prompt. */
+/** An answer message as material for a review, summary or goal-mode prompt. */
 const materialOf = (message) => ({
   agent: message.provider,
   model: resultModel(message),
   text: messageText(message)
 });
+/** A feedback message as material for a goal-mode prompt, with its verdict. */
+const feedbackOf = (message) => ({ ...materialOf(message), verdict: message.verdict });
 
 /**
  * What the turn that `question` started in `room` holds for `participants`: { analyses, reviews,
@@ -210,14 +246,17 @@ export function turnComplete({ mode, participants }, { analyses, reviews, summar
 }
 
 /**
- * The turn a { roomId, resumeTurnId } body asks to resume, as { room, question, configuration, prompt,
- * context, history, progress }: the configuration, question and shared context it was asked with, the
- * earlier discussion as it was then (see historyFor) and what the turn holds (see turnProgress). Throws an
- * AppError when it cannot be resumed: unknown (400), saved without turn ids by an older version, not the
- * room's latest turn, without a readable configuration, or complete (409).
+ * The turn a { roomId, resumeTurnId, moreRounds? } body asks to resume, as { room, question, configuration,
+ * prompt, context, history, progress }: the configuration, question and shared context it was asked with,
+ * the earlier discussion as it was then (see historyFor) and what the turn holds (see turnProgress, and
+ * goalProgress for goal mode). Throws an AppError when it cannot be resumed: unknown or a moreRounds that is
+ * not a boolean (400), saved without turn ids by an older version, not the room's latest turn, without a
+ * readable configuration, complete, or a goal turn at its cap without moreRounds (409).
  */
 async function resumedTurn(body, rooms) {
   const turnId = readTurnId(body.resumeTurnId);
+  const { moreRounds = false } = body;
+  if (typeof moreRounds !== 'boolean') throw new AppError('「继续磨合」的请求无效。');
   if (typeof body.roomId !== 'string') throw new AppError('请指定要重试的讨论。');
   const room = await rooms.load(body.roomId);
   const messages = roomMessages(room);
@@ -232,8 +271,16 @@ async function resumedTurn(body, rooms) {
   const prompt = messageText(question).trim();
   if (!saved || !prompt) throw new AppError('这一轮的设置或问题无法读取，无法重试。请重新提问。', 409);
   const configuration = readConfiguration(saved);
-  const progress = turnProgress(room, question, configuration.participants);
-  if (turnComplete(configuration, progress)) throw new AppError('这一轮已经完成，无需重试。', 409);
+  let progress;
+  if (configuration.mode === 'goal') {
+    progress = goalProgress(room, question, configuration);
+    if (progress.status === 'consensus') throw new AppError('这一轮已经完成，无需重试。', 409);
+    if (progress.status === 'capped' && !moreRounds)
+      throw new AppError('这一轮已达到最多版本数，可以点「继续磨合」再修改几版。', 409);
+  } else {
+    progress = turnProgress(room, question, configuration.participants);
+    if (turnComplete(configuration, progress)) throw new AppError('这一轮已经完成，无需重试。', 409);
+  }
   // The history as the question saw it: the messages before it, with the contexts they were asked with.
   const contexts = questionContexts(room);
   const context = contexts.get(question) ?? '';
@@ -243,7 +290,114 @@ async function resumedTurn(body, rooms) {
     { ...room, messages: before, context: earlier ? contexts.get(earlier) : '' },
     context
   );
-  return { room, question, configuration, prompt, context, history, progress };
+  return { room, question, configuration, prompt, context, history, progress, moreRounds };
+}
+
+/**
+ * Runs what is missing of a goal turn (see goal.mjs), from `progress` (goalProgress) when resuming, else from
+ * nothing: the participants' proposals and version 1 of the plan until it exists, then feedback on the latest
+ * version from every participant but its author, then, until everyone approves or the cap is reached, the
+ * next version by the same author. `moreRounds` lifts the cap of a turn that reached it by
+ * configuration.maxRounds versions. perform, notice, base and signal are runDiscussion's.
+ */
+async function runGoal({ configuration, progress, moreRounds, base, perform, notice, signal }) {
+  const { participants: agents, moderator, maxRounds } = configuration;
+  const stopped = () => notice('讨论已停止。已完成的方案和评审保留；未完成的调用已终止。');
+  const proposals = new Map(progress?.proposals);
+  const rounds = progress
+    ? progress.rounds.map((round) => ({ ...round, feedback: new Map(round.feedback) }))
+    : [];
+  // The cap is stored with every version written under it, so that a resumed turn keeps it.
+  let cap = progress?.cap ?? maxRounds;
+  if (progress?.status === 'capped' && moreRounds) cap = progress.latest.version + maxRounds;
+
+  if (!rounds.length) {
+    const missing = agents.filter((agent) => !proposals.has(agent));
+    const answers = await Promise.all(
+      missing.map((agent) => perform(agent, proposalPrompt(base), 'proposal'))
+    );
+    missing.forEach((agent, index) => answers[index] && proposals.set(agent, answers[index]));
+    if (signal.aborted) return stopped();
+    const proposed = agents.filter((agent) => proposals.has(agent));
+    const unproposed = agents.filter((agent) => !proposals.has(agent));
+    if (proposed.length < 2)
+      return notice(
+        '完成独立方案的参与者不足两位，本轮已停止整理和评审方案。可以重试未完成的部分，或根据已返回内容继续追问。'
+      );
+    if (unproposed.length)
+      await notice(
+        `${participantNames(unproposed)} 未完成独立方案，方案 v1 只基于 ${participantNames(proposed)} 的方案整理。`
+      );
+    // The moderator writes the plan when its own proposal succeeded, else the first participant whose did.
+    const author = proposals.has(moderator) ? moderator : proposed[0];
+    if (author !== moderator)
+      await notice(
+        `主持人 ${providerLabel(moderator)} 未完成独立方案，本轮改由 ${providerLabel(author)} 整理和修改方案。`
+      );
+    const draft = await perform(
+      author,
+      draftPrompt(base, {
+        proposals: proposed.map((agent) => materialOf(proposals.get(agent))),
+        missing: unproposed,
+        moderator: author,
+        standingInFor: author === moderator ? null : moderator
+      }),
+      'draft',
+      { role: 'summary', version: 1, metadata: { version: 1, cap } }
+    );
+    if (!draft) return signal.aborted ? stopped() : undefined;
+    rounds.push({ draft, version: 1, feedback: new Map() });
+  }
+
+  for (;;) {
+    const { draft, version, feedback } = rounds.at(-1);
+    const author = draft.provider;
+    const plan = { ...materialOf(draft), version };
+    const reviewers = agents.filter((agent) => agent !== author);
+    // From version 2 on, the reviewers also read each other's feedback on the version before.
+    const before = rounds.at(-2);
+    const previous = before
+      ? agents
+          .filter((agent) => before.feedback.has(agent))
+          .map((agent) => feedbackOf(before.feedback.get(agent)))
+      : [];
+    const missing = reviewers.filter((agent) => !feedback.has(agent));
+    const answers = await Promise.all(
+      missing.map((agent) =>
+        perform(agent, feedbackPrompt(base, { plan, previous, reviewer: agent }), 'feedback', {
+          version,
+          metadata: (text) => ({ version, verdict: parseVerdict(text) })
+        })
+      )
+    );
+    missing.forEach((agent, index) => answers[index] && feedback.set(agent, answers[index]));
+    if (signal.aborted) return stopped();
+    const unreviewed = reviewers.filter((agent) => !feedback.has(agent));
+    // A missing feedback is no approval: without it, no one can tell whether everyone approves.
+    if (unreviewed.length)
+      return notice(
+        `${participantNames(unreviewed)} 未完成对方案 v${version} 的评审，无法判断是否全员认可，本轮已暂停。可以重试未完成的部分。`
+      );
+    const objectors = reviewers.filter((agent) => feedback.get(agent).verdict !== 'approve');
+    if (!objectors.length) return notice(`全员认可方案 v${version}，目标模式结束。`);
+    if (version >= cap)
+      return notice(
+        `已达到最多 ${cap} 版，方案 v${version} 仍未获得全员认可：${participantNames(objectors)} 认为还需修改。` +
+          `可以点「继续磨合」再修改最多 ${maxRounds} 版，或根据当前方案继续追问。`
+      );
+    const next = await perform(
+      author,
+      revisionPrompt(base, {
+        plan,
+        feedback: reviewers.map((agent) => feedbackOf(feedback.get(agent))),
+        moderator: author
+      }),
+      'draft',
+      { role: 'summary', version: version + 1, metadata: { version: version + 1, cap } }
+    );
+    if (!next) return signal.aborted ? stopped() : undefined;
+    rounds.push({ draft: next, version: version + 1, feedback: new Map() });
+  }
 }
 
 /**
@@ -331,19 +485,25 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
     // Resolves to the saved answer message, or to null when the call failed (recorded as an error message)
     // or was stopped. While the call runs, its streamed text goes out as delta events and what the model
     // does as statuses. A call that fails for a network reason is tried once more after RETRY_DELAY.
-    const perform = async (agent, task, stage, role = agent) => {
+    // options: role (of the message; the agent's id by default); version, the version of the plan a
+    // goal-mode call is about, named in its statuses, previews and error; metadata, stored with the answer,
+    // or a function of the answer's text that returns it.
+    const perform = async (agent, task, stage, { role = agent, version, metadata = {} } = {}) => {
       if (signal.aborted) return null;
-      const focused = stage === 'summary' ? task : withCapability(settings[agent].capability, task);
-      let shown = STAGE_STATUS[stage];
-      status(agent, stage, shown);
+      // A participant's analysis focus shapes its own answers, not the moderator's summary or plan.
+      const focused = MODERATOR_STAGES.has(stage) ? task : withCapability(settings[agent].capability, task);
+      const writing = stageStatus(stage, version);
+      const extra = version ? { version } : {};
+      let shown = writing;
+      status(agent, stage, shown, extra);
       const onActivity = (kind) => {
-        const text = kind === 'writing' ? STAGE_STATUS[stage] : ACTIVITY_STATUS[kind];
+        const text = kind === 'writing' ? writing : ACTIVITY_STATUS[kind];
         if (!text || text === shown || signal.aborted) return;
         shown = text;
-        status(agent, stage, text);
+        status(agent, stage, text, extra);
       };
       for (let attempt = 1; ; attempt++) {
-        const preview = livePreview(emit, agent, stage);
+        const preview = livePreview(emit, agent, stage, version);
         let answer;
         try {
           answer = await invoke(agent, focused, webSearch, signal, settings[agent], {
@@ -355,18 +515,15 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
           if (signal.aborted) return null;
           if (attempt === 1 && e.category === 'network') {
             shown = RETRY_STATUS;
-            status(agent, stage, RETRY_STATUS, { retry: true });
+            status(agent, stage, RETRY_STATUS, { ...extra, retry: true });
             await sleep(RETRY_DELAY, undefined, { signal }).catch(() => {});
             if (signal.aborted) return null;
-            shown = STAGE_STATUS[stage];
-            status(agent, stage, shown);
+            shown = writing;
+            status(agent, stage, shown, extra);
             continue;
           }
-          await add(
-            'system',
-            `${providerLabel(agent)} ${STAGE_TASK[stage]}失败：${safeDetail(e.message)}`,
-            'error'
-          );
+          const failed = STAGE_TASK[stage] + (version ? ` v${version} ` : '');
+          await add('system', `${providerLabel(agent)} ${failed}失败：${safeDetail(e.message)}`, 'error');
           status(agent, 'error', '本轮未完成');
           return null;
         }
@@ -375,12 +532,24 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
         const message = await add(role, answer.text, stage, {
           provider: agent,
           model: answer.model,
-          ...answerMeasures(answer)
+          ...answerMeasures(answer),
+          ...(typeof metadata === 'function' ? metadata(answer.text) : metadata)
         });
-        status(agent, stage, '已完成');
+        status(agent, stage, '已完成', extra);
         return message;
       }
     };
+
+    if (mode === 'goal')
+      return void (await runGoal({
+        configuration,
+        progress: resume?.progress,
+        moreRounds: Boolean(resume?.moreRounds),
+        base,
+        perform,
+        notice,
+        signal
+      }));
 
     // What the turn holds: from the stored turn when resuming, else nothing yet.
     const analyses = new Map(resume?.progress.analyses);
@@ -450,7 +619,7 @@ export async function runDiscussion(body, response, signal, { health, invoke, ro
         standingInFor: summarizer === moderator ? null : moderator
       }),
       'summary',
-      'summary'
+      { role: 'summary' }
     );
     if (signal.aborted) await notice('讨论已停止，已完成内容保留。');
   } finally {

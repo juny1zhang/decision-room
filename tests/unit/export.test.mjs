@@ -114,9 +114,80 @@ test('a three-participant room exports each round setting, speaker, stage, time 
   );
 });
 
+test('a goal-mode room exports its proposals, each version of the plan, the verdicts and the final plan', () => {
+  const date = '2026-02-02T00:00:00.000Z';
+  const time = '2026-02-02 08:00（UTC+08:00）';
+  const goal = {
+    mode: 'goal',
+    participants: ['codex', 'claude'],
+    moderator: 'claude',
+    settings: {
+      codex: { model: '', reasoning: '', capability: 'plan' },
+      claude: { model: 'sonnet', reasoning: '', capability: 'general' }
+    },
+    webSearch: false,
+    maxRounds: 4
+  };
+  const turnId = '00000000-0000-4000-8000-0000000000aa';
+  const message = (role, stage, text, extra = {}) => ({
+    id: text,
+    turnId,
+    role,
+    stage,
+    text,
+    createdAt: date,
+    ...extra
+  });
+  const answer = (provider, stage, text, extra) =>
+    message(provider, stage, text, { provider, model: `${provider}-m`, ...extra });
+  const draft = (version, text) =>
+    message('summary', 'draft', text, { provider: 'claude', model: 'sonnet', version, cap: 4 });
+  const room = {
+    id: '00000000-0000-4000-8000-000000000004',
+    createdAt: date,
+    title: '目标',
+    context: '',
+    messages: [
+      { ...message('user', 'question', '三个月内上线', { configuration: goal }), id: turnId },
+      answer('codex', 'proposal', 'Codex 的方案'),
+      answer('claude', 'proposal', 'Claude 的方案'),
+      draft(1, '方案一'),
+      answer('codex', 'feedback', '还缺测试\n结论：需修改', { version: 1, verdict: 'revise' }),
+      draft(2, '方案二'),
+      answer('codex', 'feedback', '可以\n结论：认可', { version: 2, verdict: 'approve' }),
+      message('system', 'notice', '全员认可方案 v2，目标模式结束。')
+    ]
+  };
+  assert.equal(
+    exportRoom(room),
+    `# 目标\n\n创建：${time}\n\n` +
+      `## 你 · 问题 · ${time}\n\n` +
+      '本轮设置 · 目标模式 · 网页检索关闭 · 主持人 Claude · 最多 4 版\n\n' +
+      '- Codex · CLI 默认模型 · 方案规划\n- Claude · sonnet · 综合分析\n\n三个月内上线\n\n' +
+      `## Codex · 独立方案 · ${time}\n\n模型 · codex-m\n\nCodex 的方案\n\n` +
+      `## Claude · 独立方案 · ${time}\n\n模型 · claude-m\n\nClaude 的方案\n\n` +
+      `## 主持人（Claude） · 方案 v1 · ${time}\n\n模型 · sonnet\n\n方案一\n\n` +
+      `## Codex · 评审方案 v1（需修改） · ${time}\n\n模型 · codex-m\n\n还缺测试\n结论：需修改\n\n` +
+      `## 主持人（Claude） · 最终方案 v2 · ${time}\n\n模型 · sonnet\n\n方案二\n\n` +
+      `## Codex · 评审方案 v2（认可） · ${time}\n\n模型 · codex-m\n\n可以\n结论：认可\n\n` +
+      `## 状态说明 · 提示 · ${time}\n\n全员认可方案 v2，目标模式结束。\n\n`
+  );
+  // Without the approval, no version is final; a version or verdict edited away falls back to the stage.
+  const open = { ...room, messages: room.messages.slice(0, -2) };
+  assert.ok(!exportRoom(open).includes('最终方案'));
+  assert.ok(exportRoom(open).includes('## 主持人（Claude） · 方案 v2 · '));
+  const edited = {
+    ...room,
+    messages: [message('summary', 'draft', '无版本'), answer('codex', 'feedback', '无结论', { version: 3 })]
+  };
+  assert.ok(exportRoom(edited).includes('## 主持人（Codex） · 方案 · '));
+  assert.ok(exportRoom(edited).includes('## Codex · 评审方案 v3（需修改） · '));
+});
+
 test('stages are named in Chinese; unknown stages keep their stored name', () => {
   const names = ['question', 'analysis', 'review', 'summary', 'notice', 'error'].map(stageName);
   assert.deepEqual(names, ['问题', '独立分析', '交叉审查', '讨论总结', '提示', '提示']);
+  assert.deepEqual(['proposal', 'draft', 'feedback'].map(stageName), ['独立方案', '方案', '评审']);
   assert.equal(stageName('custom'), 'custom');
   assert.equal(stageName('toString'), 'toString');
   assert.equal(stageName(undefined), '');
@@ -234,7 +305,8 @@ test('savedConfiguration completes saved settings and drops what is unknown', ()
     participants: ['codex', 'claude'],
     moderator: 'codex',
     settings: { codex: defaults, claude: defaults },
-    webSearch: false
+    webSearch: false,
+    maxRounds: 3
   });
   assert.deepEqual(
     savedConfiguration({
@@ -255,7 +327,8 @@ test('savedConfiguration completes saved settings and drops what is unknown', ()
         cursor: { model: 'auto', reasoning: '', capability: 'general' },
         claude: { model: '', reasoning: 'high', capability: 'risk' }
       },
-      webSearch: false
+      webSearch: false,
+      maxRounds: 3
     }
   );
   assert.deepEqual(savedConfiguration({ mode: 'cursor', participants: ['codex'], webSearch: true }), {
@@ -263,7 +336,8 @@ test('savedConfiguration completes saved settings and drops what is unknown', ()
     participants: ['cursor'],
     moderator: 'cursor',
     settings: { cursor: defaults },
-    webSearch: true
+    webSearch: true,
+    maxRounds: 3
   });
   for (const saved of [
     undefined,

@@ -2,19 +2,23 @@
 // exports), and which shared context was in effect for each question.
 import { PROVIDERS, providerLabel } from './providers/index.mjs';
 
-/** Discussion modes: two with several participants, then one single-participant mode per provider. */
+/** Discussion modes: three with several participants, then one single-participant mode per provider. */
 export const MODE_NAMES = Object.freeze({
   debate: '联合讨论',
+  goal: '目标模式',
   both: '分别回答',
   ...Object.fromEntries(PROVIDERS.map((provider) => [provider.id, provider.label]))
 });
 
-/** Message stages as people see them. */
+/** Message stages as people see them. Goal mode's drafts and feedback also name their version (stageLabel). */
 export const STAGE_NAMES = Object.freeze({
   question: '问题',
   analysis: '独立分析',
   review: '交叉审查',
   summary: '讨论总结',
+  proposal: '独立方案',
+  draft: '方案',
+  feedback: '评审',
   notice: '提示',
   error: '提示'
 });
@@ -26,7 +30,9 @@ const LEGACY_MODERATOR = 'codex';
 export function speakerName(message) {
   if (message.role === 'summary') {
     const moderator = message.provider || LEGACY_MODERATOR;
-    return `决策归纳（${providerLabel(moderator) || moderator}）`;
+    // Goal mode's versions of the plan are the moderator's too, written with the role of a summary.
+    const role = message.stage === 'draft' ? '主持人' : '决策归纳';
+    return `${role}（${providerLabel(moderator) || moderator}）`;
   }
   if (Object.hasOwn(ROLE_NAMES, message.role)) return ROLE_NAMES[message.role];
   return providerLabel(message.role) || message.role;
@@ -36,6 +42,25 @@ export function speakerName(message) {
 export function stageName(stage) {
   if (typeof stage !== 'string') return '';
   return Object.hasOwn(STAGE_NAMES, stage) ? STAGE_NAMES[stage] : stage;
+}
+
+/** The version of the plan a goal-mode message holds or reviews: a whole number from 1, else null. */
+export const planVersion = (value) => (Number.isSafeInteger(value) && value >= 1 ? value : null);
+
+/** A feedback verdict ('approve' or 'revise') in words; anything but approval counts as 需修改. */
+export const verdictName = (verdict) => (verdict === 'approve' ? '认可' : '需修改');
+
+/**
+ * The stage of `message` as people see it, with the version goal mode adds: "方案 v2" for a version of the
+ * plan, "最终方案 v2" when it is `final` (every reviewer approved it), and "评审方案 v2（认可）" or "（需修改）"
+ * for feedback. Other stages, and goal-mode messages without a valid version, are named by stageName.
+ */
+export function stageLabel(message, final = false) {
+  const version = planVersion(message.version);
+  if (version && message.stage === 'draft') return `${final ? '最终方案' : '方案'} v${version}`;
+  if (version && message.stage === 'feedback')
+    return `评审方案 v${version}（${verdictName(message.verdict)}）`;
+  return stageName(message.stage);
 }
 
 /** The model that produced a message, or '' when unknown. */

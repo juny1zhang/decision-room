@@ -1,5 +1,6 @@
 // Validation of what the browser submits for a discussion round, and of the configurations rooms saved.
 import { CAPABILITY_LABELS } from './capabilities.mjs';
+import { DEFAULT_MAX_ROUNDS, MAX_ROUNDS_LIMIT } from './config.mjs';
 import { AppError } from './errors.mjs';
 import { MODE_NAMES } from './messages.mjs';
 import { isModelId } from './providers/common.mjs';
@@ -9,6 +10,9 @@ export { isModelId };
 
 /** A message id, as made by randomUUID(). */
 const MESSAGE_ID = /^[a-f0-9-]{36}$/;
+
+/** Whether `value` may cap the versions of a goal-mode plan: a whole number from 1 to MAX_ROUNDS_LIMIT. */
+export const isMaxRounds = (value) => Number.isInteger(value) && value >= 1 && value <= MAX_ROUNDS_LIMIT;
 
 /**
  * The turn a /api/run body asks to resume (`resumeTurnId`: the id of the turn's question). Throws an
@@ -27,14 +31,17 @@ function listLabels(ids) {
 
 /**
  * Reads and checks the round settings of a /api/run body: mode, participants, moderator, per-participant
- * model, reasoning and capability, and web search. Throws an AppError (400) naming the first problem.
- * Settings may also be given for providers that do not take part; they are checked and kept.
+ * model, reasoning and capability, web search, and maxRounds, the versions of the plan a goal-mode turn may
+ * write (kept in every mode, so that the choice survives a switch to another mode and back). Throws an
+ * AppError (400) naming the first problem. Settings may also be given for providers that do not take part;
+ * they are checked and kept.
  */
 export function readConfiguration(body) {
-  const { mode = 'debate', webSearch = false } = body;
+  const { mode = 'debate', webSearch = false, maxRounds = DEFAULT_MAX_ROUNDS } = body;
   if (typeof mode !== 'string' || !Object.hasOwn(MODE_NAMES, mode))
     throw new AppError('请选择有效的讨论模式。');
   if (typeof webSearch !== 'boolean') throw new AppError('网页检索选项无效。');
+  if (!isMaxRounds(maxRounds)) throw new AppError(`「最多几版」必须是 1 到 ${MAX_ROUNDS_LIMIT} 之间的整数。`);
   const solo = isProviderId(mode);
   const { participants = solo ? [mode] : PROVIDER_IDS.slice(0, 2) } = body;
   if (
@@ -47,7 +54,8 @@ export function readConfiguration(body) {
   }
   if (solo && (participants.length !== 1 || participants[0] !== mode))
     throw new AppError('单方模式只能选择对应的参与者。');
-  if (!solo && participants.length < 2) throw new AppError('联合讨论和分别回答需要至少两位参与者。');
+  if (!solo && participants.length < 2)
+    throw new AppError('联合讨论、目标模式和分别回答需要至少两位参与者。');
   const { moderator = participants[0], settings: requested = {} } = body;
   if (!participants.includes(moderator)) throw new AppError('请从本轮参与者中选择主持人。');
   if (
@@ -70,7 +78,7 @@ export function readConfiguration(body) {
     if (!CAPABILITY_LABELS.has(capability)) throw new AppError(`${label} 分析能力无效。`);
     settings[agent] = { model, reasoning, capability };
   }
-  return { mode, participants, moderator, settings, webSearch };
+  return { mode, participants, moderator, settings, webSearch, maxRounds };
 }
 
 const isObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -88,8 +96,9 @@ function savedSettings(options) {
 /**
  * A configuration saved in a room (room.configuration or a question's), made complete for display however it
  * was saved or edited by hand: unknown participants are dropped, missing participants default as in
- * readConfiguration, and settings that are missing or invalid become the defaults. Returns null when there
- * is no configuration or its mode is unknown. To run with it again, pass it through readConfiguration.
+ * readConfiguration, and settings that are missing or invalid become the defaults (also maxRounds, which
+ * configurations saved before goal mode lack). Returns null when there is no configuration or its mode is
+ * unknown. To run with it again, pass it through readConfiguration.
  */
 export function savedConfiguration(saved) {
   if (!isObject(saved) || typeof saved.mode !== 'string' || !Object.hasOwn(MODE_NAMES, saved.mode))
@@ -105,5 +114,12 @@ export function savedConfiguration(saved) {
   const settings = {};
   for (const agent of participants)
     settings[agent] = savedSettings(Object.hasOwn(requested, agent) ? requested[agent] : undefined);
-  return { mode, participants, moderator, settings, webSearch: saved.webSearch === true };
+  return {
+    mode,
+    participants,
+    moderator,
+    settings,
+    webSearch: saved.webSearch === true,
+    maxRounds: isMaxRounds(saved.maxRounds) ? saved.maxRounds : DEFAULT_MAX_ROUNDS
+  };
 }
