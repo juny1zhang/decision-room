@@ -298,6 +298,15 @@ test('Cursor failures use its own classifier on stderr and error results only', 
     ['ConnectError: [invalid_argument] bad request', 'other']
   ])
     assert.equal(classifyCursorFailure({ code: 1, stderr }).category, category, stderr);
+  // A stalled stream Cursor already retried itself is named, and not retried again as a lost connection.
+  assert.deepEqual(
+    classifyCursorFailure({ code: 1, stderr: 'RetriableError: Connection stalled repeatedly' }),
+    {
+      category: 'other',
+      message:
+        'Cursor 与模型服务的数据流多次停滞，Cursor 自行重试后仍未恢复。可以重试未完成的部分，或换一个模型（例如推理档位较低的版本）再试。'
+    }
+  );
   // Failures Cursor's own patterns do not name fall back to the shared ones.
   await failsWith(
     cursor,

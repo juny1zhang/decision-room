@@ -16,6 +16,9 @@ const authenticationError =
 // transport codes mean a lost connection.
 const connectionLost =
   /connection lost|writableiterable is closed|econnreset|unavailable:|\[(?:unavailable|deadline_exceeded)\]|fetch failed/i;
+// The model service stopped sending data mid-answer, and Cursor gave up after its own retries
+// ("RetriableError: Connection stalled repeatedly", after minutes). Retrying it again seldom helps.
+const connectionStalled = /connection stalled/i;
 const usageLimit = /rate.?limit|quota|usage.?limit|out of credits|resource.?exhausted/i;
 const modelUnavailable =
   /model.{0,80}(invalid|unavailable|not found|not available|unknown)|cannot use this model|unknown model/i;
@@ -237,6 +240,11 @@ const CURSOR_FAILURES = [
   ['auth', authenticationError, 'Cursor 登录已失效。请运行 agent login 后重新检查。'],
   ['quota', usageLimit, 'Cursor 用量或速率已达上限。请检查账号用量后重试。'],
   ['model', modelUnavailable, 'Cursor 无法使用所选模型。请重新检查连接，并从模型列表选择。'],
+  [
+    'other',
+    connectionStalled,
+    'Cursor 与模型服务的数据流多次停滞，Cursor 自行重试后仍未恢复。可以重试未完成的部分，或换一个模型（例如推理档位较低的版本）再试。'
+  ],
   ['network', connectionLost, 'Cursor 与模型服务的连接已中断。请检查网络后重试。']
 ];
 
